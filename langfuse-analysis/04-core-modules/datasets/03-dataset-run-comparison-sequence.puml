@@ -1,0 +1,296 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title Dataset Run 对比查询流程（UI）
+
+actor "用户" as User
+participant "Frontend\n(Run Comparison)" as Frontend
+participant "tRPC Client" as TRPCClient
+participant "tRPC Router\n(datasets)" as Router
+participant "Dataset Service" as Service
+database "ClickHouse" as CH
+participant "Traces Service" as TracesService
+database "PostgreSQL" as PG
+participant "Scores Service" as ScoresService
+
+== 步骤 1: 用户选择要对比的 Runs ==
+
+User -> Frontend: 进入 Dataset 详情页\n选择 2 个 runs 进行对比
+activate Frontend
+
+Frontend -> Frontend: selectedRunIds = [\n  "run-gpt4-baseline",\n  "run-gpt4-optimized"\n]
+
+== 步骤 2: 查询 Run 基础信息 ==
+
+Frontend -> TRPCClient: datasets.runsByDatasetId({\n  datasetId: "ds-123",\n  filter: []\n})
+activate TRPCClient
+
+TRPCClient -> Router: runsByDatasetId()
+activate Router
+
+Router -> Router: 检查是否需要 ClickHouse\n(requiresClickhouseLookups)
+
+note right of Router
+  如果 filter 包含:
+  - latency, cost, scores
+  → 查询 ClickHouse
+  
+  否则:
+  → 只查询 PostgreSQL
+end note
+
+Router -> PG: SELECT * FROM dataset_runs\nWHERE dataset_id = ?\n  AND project_id = ?\nORDER BY created_at DESC
+activate PG
+
+PG --> Router: runs [\n  { id: "run-gpt4-baseline", name: "...", metadata: {...} },\n  { id: "run-gpt4-optimized", name: "...", metadata: {...} }\n]
+deactivate PG
+
+Router --> TRPCClient: { runs, totalRuns: 2 }
+deactivate Router
+
+TRPCClient --> Frontend: runs data
+deactivate TRPCClient
+
+== 步骤 3: 查询 Runs 的聚合指标 ==
+
+Frontend -> TRPCClient: datasets.runsByDatasetIdMetrics({\n  datasetId: "ds-123",\n  runIds: [\n    "run-gpt4-baseline",\n    "run-gpt4-optimized"\n  ]\n})
+activate TRPCClient
+
+TRPCClient -> Router: runsByDatasetIdMetrics()
+activate Router
+
+Router -> Service: getDatasetRunsTableMetricsCh(\n  projectId,\n  datasetId,\n  runIds,\n  filter\n)
+activate Service
+
+Service -> CH: SELECT\n  dataset_run_id,\n  count(*) as countRunItems,\n  avg(latency) as avgLatency,\n  sum(total_cost) as totalCost,\n  avg(total_cost) as avgTotalCost\nFROM dataset_run_items_rmt\nWHERE project_id = ?\n  AND dataset_id = ?\n  AND dataset_run_id IN (?, ?)\nGROUP BY dataset_run_id
+activate CH
+
+note right of CH
+  聚合查询:
+  - countRunItems: item 数量
+  - avgLatency: 平均延迟
+  - totalCost: 总成本
+  - avgTotalCost: 平均成本
+end note
+
+CH --> Service: [\n  {\n    id: "run-gpt4-baseline",\n    countRunItems: 50,\n    avgLatency: 650,\n    totalCost: 0.12,\n    avgTotalCost: 0.0024\n  },\n  {\n    id: "run-gpt4-optimized",\n    countRunItems: 50,\n    avgLatency: 420,\n    totalCost: 0.08,\n    avgTotalCost: 0.0016\n  }\n]
+deactivate CH
+
+Service --> Router: run metrics
+deactivate Service
+
+== 步骤 3.2: 查询 Scores ==
+
+Router -> ScoresService: getTraceScoresForDatasetRuns(\n  projectId,\n  runIds\n)
+activate ScoresService
+
+ScoresService -> PG: SELECT\n  s.name,\n  s.value,\n  s.trace_id,\n  dri.dataset_run_id\nFROM scores s\nJOIN dataset_run_items dri\n  ON s.trace_id = dri.trace_id\nWHERE dri.dataset_run_id IN (?, ?)\n  AND s.project_id = ?
+activate PG
+
+note right of PG
+  关联查询:
+  - scores 表 join dataset_run_items
+  - 按 dataset_run_id 分组
+end note
+
+PG --> ScoresService: [\n  { datasetRunId: "run-gpt4-baseline", name: "correctness", value: 0.92 },\n  { datasetRunId: "run-gpt4-baseline", name: "correctness", value: 0.88 },\n  ...\n  { datasetRunId: "run-gpt4-optimized", name: "correctness", value: 0.95 },\n  ...\n]
+deactivate PG
+
+ScoresService -> ScoresService: aggregateScores(scores)
+
+note right of ScoresService
+  Score 聚合:
+  - 按 name 分组
+  - 计算 avg, min, max, count
+end note
+
+ScoresService --> Router: [\n  {\n    runId: "run-gpt4-baseline",\n    scores: {\n      correctness: { avg: 0.90, count: 50 },\n      fluency: { avg: 0.85, count: 50 }\n    }\n  },\n  {\n    runId: "run-gpt4-optimized",\n    scores: {\n      correctness: { avg: 0.96, count: 50 },\n      fluency: { avg: 0.92, count: 50 }\n    }\n  }\n]
+deactivate ScoresService
+
+Router -> Router: 合并 metrics 和 scores
+
+Router --> TRPCClient: {\n  runs: [\n    {\n      id: "run-gpt4-baseline",\n      countRunItems: 50,\n      avgLatency: 650,\n      avgTotalCost: 0.0024,\n      scores: { correctness: { avg: 0.90 } }\n    },\n    {\n      id: "run-gpt4-optimized",\n      countRunItems: 50,\n      avgLatency: 420,\n      avgTotalCost: 0.0016,\n      scores: { correctness: { avg: 0.96 } }\n    }\n  ]\n}
+deactivate Router
+
+TRPCClient --> Frontend: runs with metrics
+deactivate TRPCClient
+
+Frontend -> Frontend: 渲染聚合对比表
+
+note right of Frontend
+  显示对比表格:
+  
+  Metric          | Baseline | Optimized | Δ
+  ----------------|----------|-----------|------
+  Items           | 50       | 50        | -
+  Avg Latency     | 650ms    | 420ms     | ↓ 35%
+  Avg Cost        | $0.0024  | $0.0016   | ↓ 33%
+  Correctness     | 0.90     | 0.96      | ↑ 6.7%
+  Fluency         | 0.85     | 0.92      | ↑ 8.2%
+end note
+
+== 步骤 4: 查询逐项对比数据 ==
+
+User -> Frontend: 点击 "View detailed comparison"
+Frontend -> Frontend: selectedItemId = null\n(查询所有 items)
+
+Frontend -> TRPCClient: datasets.datasetItemsWithRunData({\n  datasetId: "ds-123",\n  runIds: [\n    "run-gpt4-baseline",\n    "run-gpt4-optimized"\n  ],\n  page: 0,\n  limit: 50\n})
+activate TRPCClient
+
+TRPCClient -> Router: datasetItemsWithRunData()
+activate Router
+
+== 步骤 4.1: 查询 Dataset Item IDs ==
+
+Router -> Service: getDatasetItemIdsWithRunData(\n  projectId,\n  datasetId,\n  runIds,\n  filterByRun\n)
+activate Service
+
+Service -> CH: SELECT DISTINCT dataset_item_id\nFROM dataset_run_items_rmt\nWHERE project_id = ?\n  AND dataset_id = ?\n  AND dataset_run_id IN (?, ?)\nLIMIT 50 OFFSET 0
+activate CH
+
+CH --> Service: dataset item IDs [\n  "item-001",\n  "item-002",\n  ...\n  "item-050"\n]
+deactivate CH
+
+Service --> Router: item IDs
+deactivate Service
+
+== 步骤 4.2: 查询 Run Items ==
+
+Router -> Service: getDatasetRunItemsWithoutIOByItemIds(\n  projectId,\n  datasetId,\n  runIds,\n  datasetItemIds\n)
+activate Service
+
+Service -> CH: SELECT\n  id,\n  dataset_run_id,\n  dataset_item_id,\n  trace_id,\n  observation_id,\n  latency,\n  total_cost\nFROM dataset_run_items_rmt\nWHERE project_id = ?\n  AND dataset_id = ?\n  AND dataset_run_id IN (?, ?)\n  AND dataset_item_id IN (?, ?, ...)\nORDER BY dataset_item_id, created_at
+activate CH
+
+note right of CH
+  返回所有 run items:
+  - item-001 的 2 个 run items
+  - item-002 的 2 个 run items
+  - ...
+  总共 100 个 run items (50 * 2)
+end note
+
+CH --> Service: run items (100 records)
+deactivate CH
+
+Service --> Router: run items
+deactivate Service
+
+== 步骤 4.3: Enrich Trace 数据 ==
+
+Router -> Service: enrichAndMapToDatasetItemId(\n  projectId,\n  runItems\n)
+activate Service
+
+Service -> Service: 提取所有 traceIds
+
+Service -> TracesService: getTracesByIds(traceIds)
+activate TracesService
+
+TracesService -> PG: SELECT\n  id,\n  name,\n  input,\n  output,\n  metadata\nFROM traces\nWHERE id IN (?, ?, ...)\n  AND project_id = ?
+activate PG
+
+PG --> TracesService: traces (100 records)
+deactivate PG
+
+TracesService --> Service: traces
+deactivate TracesService
+
+Service -> Service: 合并 run items 和 traces
+
+Service --> Router: enriched run items
+deactivate Service
+
+== 步骤 4.4: 查询 Dataset Items ==
+
+Router -> Service: getDatasetItems(\n  projectId,\n  filterState,\n  orderBy\n)
+activate Service
+
+Service -> PG: SELECT * FROM dataset_items\nWHERE project_id = ?\n  AND dataset_id = ?\n  AND id IN (?, ?, ...)\n  AND valid_to IS NULL\n  AND is_deleted = false
+activate PG
+
+PG --> Service: dataset items (50 records)
+deactivate PG
+
+Service --> Router: items
+deactivate Service
+
+== 步骤 4.5: 按 Item ID 分组返回 ==
+
+Router -> Router: groupByDatasetItemId(\n  items,\n  runItems\n)
+
+note right of Router
+  分组结构:
+  {
+    "item-001": {
+      item: { id, input, expectedOutput },
+      runData: [
+        { runId: "baseline", trace: {...}, latency: 650 },
+        { runId: "optimized", trace: {...}, latency: 420 }
+      ]
+    },
+    "item-002": {...},
+    ...
+  }
+end note
+
+Router --> TRPCClient: {\n  data: [\n    {\n      itemId: "item-001",\n      input: { userName: "Alice" },\n      expectedOutput: { greeting: "Hello Alice!" },\n      runData: [\n        {\n          runId: "run-gpt4-baseline",\n          runName: "GPT-4 Baseline",\n          traceId: "trace-001",\n          output: { greeting: "Hi Alice!" },\n          latency: 650,\n          cost: 0.0025,\n          scores: [{ name: "correctness", value: 0.9 }]\n        },\n        {\n          runId: "run-gpt4-optimized",\n          runName: "GPT-4 Optimized",\n          traceId: "trace-002",\n          output: { greeting: "Hello Alice!" },\n          latency: 420,\n          cost: 0.0016,\n          scores: [{ name: "correctness", value: 1.0 }]\n        }\n      ]\n    },\n    // ... more items\n  ],\n  totalCount: 50\n}
+deactivate Router
+
+TRPCClient --> Frontend: comparison data
+deactivate TRPCClient
+
+== 步骤 5: 渲染并排对比表格 ==
+
+Frontend -> Frontend: 渲染详细对比表
+
+note right of Frontend
+  并排对比表格:
+  
+  Item ID  | Input         | Baseline Output    | Optimized Output   | Δ
+  ---------|---------------|--------------------|--------------------|-------
+  item-001 | "Hello Alice" | "Hi Alice!"        | "Hello Alice!"     | ✓ Match
+           |               | 650ms / $0.0025    | 420ms / $0.0016    | ↓ 35%
+           |               | Score: 0.9         | Score: 1.0         | ↑ 11%
+  ---------|---------------|--------------------|--------------------|-------
+  item-002 | ...           | ...                | ...                | ...
+  
+  高亮差异:
+  - 绿色: 改进
+  - 红色: 退化
+  - 黄色: 不同但无明显好坏
+end note
+
+Frontend --> User: 显示详细对比
+deactivate Frontend
+
+== 用户交互 ==
+
+alt 用户点击某个 item
+  User -> Frontend: 点击 item-001
+  activate Frontend
+  Frontend -> Frontend: 展开详情面板\n显示完整 input/output JSON
+  Frontend --> User: 显示详细 JSON 对比
+  deactivate Frontend
+  
+else 用户筛选
+  User -> Frontend: 筛选 latency > 500ms
+  activate Frontend
+  Frontend -> TRPCClient: refetch with filter
+  note right of Frontend
+    重新查询，只返回满足条件的 items
+  end note
+  deactivate Frontend
+end
+
+@enduml

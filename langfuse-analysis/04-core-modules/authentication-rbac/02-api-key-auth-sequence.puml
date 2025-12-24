@@ -1,0 +1,172 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title API 密钥认证流程
+
+actor "外部客户端" as Client
+participant "API 端点" as API
+participant "ApiAuthService" as AuthService
+database "Redis Cache" as Redis
+database "Prisma/DB" as DB
+
+== Basic Auth（完整权限）==
+Client -> API: HTTP Request\nAuthorization: Basic <base64(pk:sk)>
+activate API
+
+API -> AuthService: verifyAuthHeaderAndReturnScope(\n  authHeader)
+activate AuthService
+
+AuthService -> AuthService: 解析 Basic Auth\nextractBasicAuthCredentials()
+
+note right of AuthService
+  提取：
+  - publicKey (pk-xxx)
+  - secretKey (sk-xxx)
+end note
+
+AuthService -> AuthService: 计算密钥哈希\ncreateShaHash(secretKey, SALT)
+
+AuthService -> Redis: 查询缓存的 API Key\nGET hash:{hashValue}
+activate Redis
+
+alt Redis 缓存命中
+  Redis --> AuthService: 返回缓存的密钥信息\n{id, projectId, orgId, plan, ...}
+  deactivate Redis
+  
+  note right of AuthService
+    缓存包含：
+    - API Key 基本信息
+    - 关联的项目/组织 ID
+    - 计费计划
+    - 速率限制配置
+    - 是否暂停状态
+  end note
+  
+  AuthService -> AuthService: 验证密钥有效性
+  
+else Redis 缓存未命中
+  Redis --> AuthService: null
+  deactivate Redis
+  
+  AuthService -> DB: 按 publicKey 查询\nfindUnique({publicKey})\ninclude project & organization
+  activate DB
+  DB --> AuthService: API Key 完整数据
+  deactivate DB
+  
+  alt 密钥不存在
+    AuthService -> Redis: 存储 "不存在" 标记\nSET hash:{hash} API_KEY_NON_EXISTENT
+    activate Redis
+    deactivate Redis
+    
+    AuthService --> API: {validKey: false,\nerror: "Invalid credentials"}
+    deactivate AuthService
+    API --> Client: 401 Unauthorized
+    deactivate API
+  else 密钥存在但无快速哈希
+    AuthService -> AuthService: verifySecretKey()\n使用 bcrypt 验证
+    
+    alt bcrypt 验证通过
+      AuthService -> DB: 更新为快速哈希\nupdate({fastHashedSecretKey})
+      activate DB
+      deactivate DB
+      
+      AuthService -> AuthService: 转换为 Redis 格式
+      
+      AuthService -> Redis: 缓存密钥信息\nSET hash:{hash} {keyData}
+      activate Redis
+      deactivate Redis
+    else bcrypt 验证失败
+      AuthService --> API: {validKey: false,\nerror: "Invalid credentials"}
+      deactivate AuthService
+      API --> Client: 401 Unauthorized
+      deactivate API
+    end
+  end
+end
+
+AuthService -> AuthService: 获取组织计费计划\ngetOrganizationPlan()
+
+AuthService -> AuthService: 构建认证范围\n{projectId, orgId, accessLevel, plan}
+
+AuthService --> API: {validKey: true,\nscope: {...}}
+deactivate AuthService
+
+API -> API: 执行业务逻辑\n（带权限范围）
+
+API --> Client: 200 OK + 响应数据
+deactivate API
+
+== Bearer Auth（公钥认证，受限权限）==
+Client -> API: HTTP Request\nAuthorization: Bearer pk-xxx
+activate API
+
+API -> AuthService: verifyAuthHeaderAndReturnScope(\n  authHeader)
+activate AuthService
+
+AuthService -> AuthService: 解析 Bearer Token\n提取 publicKey
+
+AuthService -> Redis: 查询缓存\nGET pk:{publicKey}
+activate Redis
+
+alt 缓存命中
+  Redis --> AuthService: 缓存的密钥信息
+  deactivate Redis
+else 缓存未命中
+  Redis --> AuthService: null
+  deactivate Redis
+  
+  AuthService -> DB: 查询 API Key\nfindUnique({publicKey})
+  activate DB
+  DB --> AuthService: API Key 数据
+  deactivate DB
+  
+  AuthService -> Redis: 缓存结果
+  activate Redis
+  deactivate Redis
+end
+
+note right of AuthService
+  Bearer Auth 限制：
+  - 不能用于 Ingestion API
+  - 不能用于敏感操作
+  - 主要用于查询操作
+end note
+
+AuthService -> AuthService: 构建受限范围\naccessLevel = "public-read-only"
+
+AuthService --> API: {validKey: true,\nscope: {accessLevel: "public-read-only"}}
+deactivate AuthService
+
+API -> API: 验证操作权限\n（仅允许受限操作）
+
+API --> Client: 200 OK / 403 Forbidden
+deactivate API
+
+note over Client, DB
+  **API Key Scope 类型：**
+  
+  1. **PROJECT scope**: 
+     - accessLevel: "project"
+     - 访问单个项目资源
+  
+  2. **ORGANIZATION scope**:
+     - accessLevel: "organization"  
+     - 访问组织内所有项目
+  
+  3. **Public Read-Only** (Bearer):
+     - 仅查询权限
+     - 不能写入或修改
+end note
+
+@enduml

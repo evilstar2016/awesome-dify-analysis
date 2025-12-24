@@ -1,0 +1,199 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title Prompt 创建流程（版本管理和标签）
+
+actor "用户" as User
+participant "Frontend\n(Prompt Editor)" as Frontend
+participant "tRPC Client" as TRPCClient
+participant "tRPC Router\n(prompts)" as Router
+participant "RBAC Check" as RBAC
+participant "Prompt Service" as Service
+participant "Redis Lock" as RedisLock
+database "Redis Cache" as Redis
+participant "Prisma ORM" as Prisma
+database "PostgreSQL" as PG
+participant "Audit Log" as Audit
+
+== 用户创建 Prompt ==
+
+User -> Frontend: 填写表单并提交\n- name: "chat-greeting"\n- prompt: "Hello! ..."\n- labels: ["latest", "staging"]
+activate Frontend
+
+Frontend -> TRPCClient: prompts.create({\n  name, prompt, config,\n  labels, tags\n})
+activate TRPCClient
+
+TRPCClient -> Router: create()
+activate Router
+
+== 权限检查 ==
+
+Router -> RBAC: throwIfNoProjectAccess(\n  scope: "prompts:CUD"\n)
+activate RBAC
+RBAC --> Router: 权限验证通过
+deactivate RBAC
+
+alt labels 包含受保护标签 (如 "production")
+  Router -> RBAC: checkHasProtectedLabels()
+  activate RBAC
+  RBAC -> PG: 查询 protectedPromptLabels
+  activate PG
+  PG --> RBAC: ["production", "prod"]
+  deactivate PG
+  
+  RBAC -> RBAC: throwIfNoProjectAccess(\n  scope: "prompts:protected_label"\n)
+  RBAC --> Router: 权限验证通过
+  deactivate RBAC
+end
+
+note right of RBAC
+  受保护标签需要额外权限
+  防止未授权修改生产环境
+end note
+
+== 获取版本号 ==
+
+Router -> Service: createPrompt(input)
+activate Service
+
+Service -> Prisma: aggregate({\n  where: { projectId, name },\n  _max: { version }\n})
+activate Prisma
+
+Prisma -> PG: SELECT MAX(version)\nFROM prompts\nWHERE project_id = ?\n  AND name = ?
+activate PG
+PG --> Prisma: maxVersion = 3
+deactivate PG
+
+Prisma --> Service: { _max: { version: 3 } }
+deactivate Prisma
+
+Service -> Service: newVersion = maxVersion + 1 = 4
+
+== 缓存失效（获取锁） ==
+
+Service -> RedisLock: acquireLock(\n  projectId, name,\n  timeout: 5000ms\n)
+activate RedisLock
+
+RedisLock -> Redis: SET lock:prompt:proj:name\n  NX EX 5
+activate Redis
+Redis --> RedisLock: OK (锁获取成功)
+deactivate Redis
+
+RedisLock --> Service: lock acquired
+deactivate RedisLock
+
+note right of Redis
+  Redis 锁机制:
+  - NX: 仅当 key 不存在时设置
+  - EX 5: 5 秒后自动过期
+  - 防止死锁
+end note
+
+== 删除旧缓存 ==
+
+Service -> Redis: DEL prompt:proj:name:*
+activate Redis
+note right of Redis
+  删除该 name 的所有缓存:
+  - prompt:proj:name:1
+  - prompt:proj:name:2
+  - prompt:proj:name:3
+  - prompt:proj:name:latest
+  - prompt:proj:name:staging
+end note
+Redis --> Service: 缓存已清除
+deactivate Redis
+
+== 写入数据库 ==
+
+Service -> Prisma: prisma.$transaction(async tx => {...})
+activate Prisma
+
+note right of Prisma
+  事务操作:
+  1. 创建新版本
+  2. 转移 "latest" 标签
+  3. 更新其他版本的标签
+end note
+
+Prisma -> PG: BEGIN TRANSACTION
+activate PG
+
+Prisma -> PG: INSERT INTO prompts\n(\n  name, version,\n  prompt, config,\n  labels, tags,\n  project_id, created_by\n)\nVALUES (?, ?, ...)
+PG --> Prisma: new prompt record
+
+alt labels 包含 "latest"
+  Prisma -> PG: UPDATE prompts\nSET labels = array_remove(labels, 'latest')\nWHERE project_id = ?\n  AND name = ?\n  AND version != ?
+  note right of PG
+    自动从其他版本移除 "latest"
+    确保只有一个版本有此标签
+  end note
+  PG --> Prisma: 更新完成
+end
+
+Prisma -> PG: COMMIT TRANSACTION
+PG --> Prisma: 事务提交成功
+deactivate PG
+
+Prisma --> Service: created prompt
+deactivate Prisma
+
+== 释放锁 ==
+
+Service -> RedisLock: releaseLock(projectId, name)
+activate RedisLock
+
+RedisLock -> Redis: DEL lock:prompt:proj:name
+activate Redis
+Redis --> RedisLock: OK
+deactivate Redis
+
+RedisLock --> Service: lock released
+deactivate RedisLock
+
+Service --> Router: prompt (version 4)
+deactivate Service
+
+== 记录审计日志 ==
+
+Router -> Audit: auditLog({\n  action: "create",\n  resourceType: "prompt",\n  resourceId: prompt.id,\n  after: prompt\n})
+activate Audit
+Audit -> PG: INSERT INTO audit_logs
+activate PG
+PG --> Audit: logged
+deactivate PG
+Audit --> Router: 审计完成
+deactivate Audit
+
+== 返回结果 ==
+
+Router --> TRPCClient: {\n  id, name,\n  version: 4,\n  labels: ["latest", "staging"],\n  prompt, config\n}
+deactivate Router
+
+TRPCClient --> Frontend: created prompt
+deactivate TRPCClient
+
+Frontend -> Frontend: 刷新 prompt 列表
+Frontend -> Frontend: 显示成功消息
+Frontend --> User: "Prompt created (version 4)"
+deactivate Frontend
+
+note right of User
+  新版本创建成功:
+  - Version 4 (latest, staging)
+  - Version 3 的 "latest" 已移除
+  - 所有缓存已失效
+end note
+
+@enduml

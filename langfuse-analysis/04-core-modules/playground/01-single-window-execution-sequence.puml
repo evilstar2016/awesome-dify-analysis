@@ -1,0 +1,274 @@
+@startuml Playground Single Window Execution
+
+title Playground 单窗口执行流程
+
+actor "用户\n(User)" as User
+participant "Playground\nUI" as UI
+participant "Playground\nContext" as Context
+participant "Next.js\nAPI Route" as API
+participant "Chat\nCompletion\nHandler" as Handler
+participant "Auth\nService" as Auth
+participant "PostgreSQL" as PG
+participant "LLM\nProvider\n(OpenAI)" as LLM
+participant "PostHog" as Analytics
+
+== 准备执行 ==
+
+User -> UI: 编辑消息和参数
+activate UI
+
+UI -> Context: updateMessage(messageId, content)
+activate Context
+Context -> Context: 更新 messages 状态
+deactivate Context
+
+UI -> Context: updateModelParamValue("temperature", 0.7)
+activate Context
+Context -> Context: 更新 modelParams 状态
+deactivate Context
+
+note right of Context
+  状态变化自动保存到 LocalStorage：
+  key: langfuse:playground:cache:{projectId}:{windowId}
+  value: { messages, modelParams, output, ... }
+end note
+
+User -> UI: 点击 "Run" 按钮
+deactivate UI
+
+== 执行阶段 ==
+
+UI -> Context: handleSubmit(streaming=true)
+activate Context
+
+Context -> Context: setIsStreaming(true)
+Context -> Context: setOutput("")
+
+Context -> Context: 编译消息\ncompileChatMessagesWithIds(\n  messages,\n  promptVariables,\n  messagePlaceholders\n)
+
+note right of Context
+  变量替换：
+  - "Hello {{name}}" → "Hello World"
+  
+  占位符替换：
+  - [[examples]] → [msg1, msg2, msg3]
+end note
+
+Context -> Context: 验证模型参数\ngetFinalModelParams(modelParams)
+
+alt 缺少必需参数
+  Context -> UI: throw Error("Provider and model required")
+  activate UI
+  UI -> User: 显示错误提示
+  deactivate UI
+  [<-- User
+end
+
+Context -> API: POST /api/chatCompletion
+activate API
+
+note right of API
+  Request Body:
+  {
+    projectId: "proj-123",
+    messages: [...],
+    modelParams: {
+      provider: "openai",
+      model: "gpt-4-turbo",
+      temperature: 0.7,
+      maxTokens: 2000
+    },
+    tools: [...],
+    structuredOutputSchema: {...},
+    streaming: true
+  }
+end note
+
+API -> Handler: chatCompletionHandler(request)
+activate Handler
+
+Handler -> Handler: validateChatCompletionBody(body)
+note right of Handler
+  Zod schema 验证：
+  - projectId required
+  - messages array valid
+  - modelParams valid
+  - tools/schema format valid
+end note
+
+alt 验证失败
+  Handler -> API: throw InvalidRequestError
+  API -> Context: 400 Bad Request
+  Context -> UI: showErrorToast
+  activate UI
+  UI -> User: 显示错误
+  deactivate UI
+  [<-- User
+end
+
+Handler -> Auth: authorizeRequestOrThrow(projectId)
+activate Auth
+
+Auth -> Auth: 获取当前用户 session
+Auth -> PG: 检查用户权限\nSELECT * FROM project_memberships\nWHERE project_id = ?\n  AND user_id = ?
+activate PG
+PG --> Auth: membership 记录
+deactivate PG
+
+alt 无权限
+  Auth -> Handler: throw UnauthorizedError
+  Handler -> API: 401 Unauthorized
+  API -> Context: Error response
+  Context -> UI: showErrorToast("No access")
+  activate UI
+  UI -> User: 显示错误
+  deactivate UI
+  deactivate Auth
+  [<-- User
+end
+
+Auth --> Handler: { userId }
+deactivate Auth
+
+Handler -> PG: 查询 LLM API Key\nSELECT * FROM llm_api_keys\nWHERE project_id = ?\n  AND provider = ?
+activate PG
+PG --> Handler: encrypted API key
+deactivate PG
+
+alt 无 API Key
+  Handler -> API: throw InvalidRequestError(\n  "No API key found"\n)
+  API -> Context: 400 Bad Request
+  Context -> UI: showErrorToast
+  activate UI
+  UI -> User: 显示错误\n"请在项目设置中添加 API key"
+  deactivate UI
+  [<-- User
+end
+
+Handler -> Handler: 解密 API key\nLLMApiKeySchema.parse()
+
+== LLM 调用 ==
+
+Handler -> LLM: fetchLLMCompletion({\n  llmConnection,\n  messages,\n  modelParams,\n  tools,\n  structuredOutputSchema,\n  streaming: true,\n  callbacks: [PosthogCallbackHandler]\n})
+activate LLM
+
+note right of LLM
+  OpenAI API 请求：
+  POST https://api.openai.com/v1/chat/completions
+  {
+    model: "gpt-4-turbo",
+    messages: [...],
+    temperature: 0.7,
+    max_tokens: 2000,
+    tools: [...],
+    stream: true
+  }
+end note
+
+LLM -> LLM: 开始流式响应
+
+LLM --> Handler: Stream开始\n(AsyncIterable<string>)
+
+Handler --> API: StreamingTextResponse
+
+API --> Context: 200 OK\nContent-Type: text/event-stream
+deactivate Handler
+deactivate API
+
+== 流式接收 ==
+
+loop 接收流式数据
+
+  LLM -> Context: 发送 chunk
+  
+  Context -> Context: 解码 chunk\nconst chunk = decoder.decode(value)
+  
+  Context -> Context: 累积输出\nresponse += chunk
+  
+  Context -> UI: 更新状态\nsetOutput(response)
+  activate UI
+  
+  UI -> User: 实时显示输出\n（打字机效果）
+  deactivate UI
+  
+  alt 用户点击 "Stop"
+    User -> UI: 点击 Stop 按钮
+    activate UI
+    
+    UI -> Context: stopExecution()
+    activate Context
+    
+    Context -> Context: setIsStreaming(false)\nisStreamingRef.current = false
+    
+    note right of Context
+      停止标志位
+      后续 chunk 将被忽略
+    end note
+    
+    deactivate Context
+    
+    UI -> User: 显示"已停止"
+    deactivate UI
+  end
+
+end
+
+LLM --> Context: Stream 结束（done=true）
+deactivate LLM
+
+== 完成阶段 ==
+
+Context -> Context: setIsStreaming(false)
+
+alt 结构化输出
+  Context -> Context: 解析 JSON\nJSON.parse(output)
+  
+  Context -> Context: 验证 schema\nvalidateAgainstSchema(\n  parsed, schema\n)
+  
+  alt 验证失败
+    Context -> UI: showErrorToast(\n  "Output doesn't match schema"\n)
+    activate UI
+    UI -> User: 显示错误
+    deactivate UI
+  end
+  
+  Context -> Context: setOutputJson(\n  JSON.stringify(parsed, null, 2)\n)
+end
+
+alt 工具调用
+  Context -> Context: 解析 tool calls\nToolCallResponseSchema.parse()
+  
+  Context -> Context: setOutputToolCalls(toolCalls)
+  
+  Context -> Context: 添加 assistant-tool-call 消息\naddMessage({\n  type: "assistant-tool-call",\n  toolCalls\n})
+  
+  Context -> Context: 为每个 tool call 添加\n空的 tool-result 消息
+  
+  note right of Context
+    用户需要手动填写 tool result
+    然后再次执行以继续对话
+  end note
+end
+
+Context -> Context: 保存到 cache\nlocalStorage.setItem(\n  key, JSON.stringify(cache)\n)
+
+Context -> Analytics: 记录分析数据\ncapture("playground:execution:success", {\n  projectId,\n  provider: "openai",\n  model: "gpt-4-turbo",\n  streaming: true,\n  tokensUsed: 1234,\n  latency: 2500\n})
+activate Analytics
+Analytics -> Analytics: 异步发送到 PostHog
+deactivate Analytics
+deactivate Context
+
+UI <-- Context: 执行完成
+
+User <-- UI: 显示完整输出
+
+note right of UI
+  输出显示：
+  - 文本输出：Markdown 渲染
+  - JSON 输出：格式化显示
+  - Tool Calls：可视化列表
+  - 复制按钮
+  - 保存到 Prompt 按钮
+end note
+
+@enduml

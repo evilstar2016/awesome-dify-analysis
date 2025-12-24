@@ -1,0 +1,245 @@
+@startuml Worker Processing Flow
+title Ingestion 模块 - Worker 处理流程
+autonumber
+
+participant "BullMQ\n(Redis Queue)" as Queue
+participant "ingestionQueueProcessor" as Worker
+participant "Redis Cache" as Redis
+participant "S3 Storage" as S3
+participant "IngestionService" as Service
+participant "ClickhouseWriter" as CHWriter
+participant "ClickHouse" as CH
+participant "PostgreSQL" as PG
+
+== 1. Job 消费 ==
+
+Queue -> Worker: consume job\n{ type, eventBodyId, fileKey,\n  skipS3List, forwardToEventsTable }
+activate Worker
+
+note over Worker: Job 信息：\n- projectId\n- entityType (trace/observation/score)\n- eventBodyId\n- fileKey（首个事件的 key）\n- skipS3List（优化标志）
+
+Worker -> Worker: 设置 span attributes\n(projectId, eventBodyId, type, fileKey)
+
+== 2. 记录文件元数据（可选） ==
+
+alt ENABLE_BLOB_STORAGE_FILE_LOG = true
+    Worker -> CHWriter: addToQueue(BlobStorageFileLog)\n记录 S3 文件路径
+    
+    note right of CHWriter: 用于文件管理：\n- 保留策略\n- 删除审计\n- bucket_path, entity_id 等
+end
+
+== 3. Redis 去重检查 ==
+
+alt ENABLE_REDIS_SEEN_EVENT_CACHE = true
+    Worker -> Redis: exists("recently-processed:\n{projectId}:{type}:{eventBodyId}:{fileKey}")
+    activate Redis
+    Redis --> Worker: exists?
+    deactivate Redis
+    
+    alt 文件已处理（5 分钟内）
+        Worker -> Worker: 记录 metric (skipped=true)
+        Worker --> Queue: 提前返回\n(跳过处理)
+        note right: 防止快速更新\n导致重复处理
+    else 文件未处理
+        Worker -> Worker: 记录 metric (skipped=false)
+    end
+end
+
+== 4. Secondary Queue 重定向（可选） ==
+
+Worker -> Worker: 检查项目是否需要重定向\n- ENV 配置\n- S3 SlowDown 标记
+
+alt 需要重定向到 secondary queue
+    Worker -> Queue: 将 job 添加到\nIngestionSecondaryQueue
+    Queue --> Worker: 成功
+    Worker --> Queue: 提前返回
+    
+    note right: 避免 S3 SlowDown\n影响主队列
+end
+
+== 5. S3 文件下载 ==
+
+Worker -> Worker: 构建 S3 prefix\n= {prefix}{projectId}/{entityType}/{eventBodyId}/
+
+alt skipS3List = true（直接下载）
+    note over Worker: OTEL observations 优化\n或 dataset_run_item
+    
+    Worker -> S3: download(prefix + fileKey + ".json")
+    activate S3
+    S3 --> Worker: JSON 文件内容
+    deactivate S3
+    
+    Worker -> Worker: 解析 JSON\nevents.push(...parsedFile)
+    Worker -> Worker: recordHistogram(s3_file_size_bytes,\nskippedS3List=true)
+    
+else skipS3List = false（列表 + 批量下载）
+    Worker -> S3: listFiles(prefix)\n列出目录下所有文件
+    activate S3
+    S3 --> Worker: eventFiles\n[{ file, createdAt }, ...]
+    deactivate S3
+    
+    Worker -> Worker: chunk(eventFiles, S3_CONCURRENT_READS)\n分批下载（默认 5 并发）
+    
+    loop 遍历每个批次
+        note over Worker,S3: 并发下载多个文件\n(S3_CONCURRENT_READS=5)
+        
+        Worker -> S3: Promise.all([\n  download(file1),\n  download(file2),\n  download(file3),\n  ...])
+        activate S3
+        S3 --> Worker: [JSON content array]
+        deactivate S3
+        
+        Worker -> Worker: 解析所有 JSON\nevents.push(...parsedFiles)
+        Worker -> Worker: recordHistogram(s3_file_size_bytes,\nskippedS3List=false)
+    end
+end
+
+Worker -> Worker: recordDistribution(count_files_distribution,\neventFiles.length)
+
+note over Worker: 统计信息：\n- 文件数量\n- 总下载大小\n- 首个文件创建时间
+
+alt events.length = 0
+    Worker -> Worker: logger.warn("No events found")
+    Worker --> Queue: 提前返回
+end
+
+== 6. 设置 Redis 缓存 ==
+
+alt ENABLE_REDIS_SEEN_EVENT_CACHE = true
+    loop 遍历所有下载的文件
+        Worker -> Redis: set("recently-processed:...", "1", EX=300)\n5 分钟过期
+        activate Redis
+        Redis --> Worker: OK
+        deactivate Redis
+    end
+    
+    note over Redis: 缓存每个文件的 key\n防止后续 5 分钟内重复处理
+end
+
+== 7. 确定转发标志 ==
+
+Worker -> Worker: 计算 forwardToEventsTable\n= job payload 或\n  (INSERT_INTO_EVENTS_TABLE && \n   PROPAGATION_QUEUE_ENABLED)
+
+note over Worker: 实验性功能：\n将事件转发到 staging 表\n用于事件传播
+
+== 8. 事件合并和处理 ==
+
+Worker -> Service: mergeAndWrite(\n  entityType,\n  projectId,\n  eventBodyId,\n  firstS3WriteTime,\n  events,\n  forwardToEventsTable\n)
+activate Service
+
+Service -> Service: 根据 entityType 路由
+
+alt entityType = "trace"
+    Service -> Service: processTraceEventList()
+    
+    note right of Service: 详见 sequence-03\n事件合并和增强流程
+    
+    Service -> PG: 查询现有 trace（可选）
+    activate PG
+    PG --> Service: trace record
+    deactivate PG
+    
+    Service -> Service: 按 timestamp 排序\n合并所有事件
+    Service -> Service: 转换 metadata\n合并 tags
+    
+    Service -> CHWriter: addToQueue(Traces, traceRecord)
+    
+else entityType = "observation"
+    Service -> Service: processObservationEventList()
+    
+    Service -> PG: 查询现有 observation（可选）
+    activate PG
+    PG --> Service: observation record
+    deactivate PG
+    
+    Service -> Service: 按 timestamp 排序\n合并所有事件
+    
+    Service -> PG: 查询 prompt（如果有 promptId）
+    activate PG
+    PG --> Service: prompt 信息
+    deactivate PG
+    
+    Service -> Service: findModel()\n匹配模型配置
+    Service -> Service: 计算 usage & cost\n（tokenization）
+    Service -> Service: 转换 metadata
+    
+    Service -> CHWriter: addToQueue(Observations, observationRecord)
+    
+    alt writeToStagingTables = true
+        Service -> CHWriter: addToQueue(StagingObservations,\nconvertedRecord)
+    end
+    
+else entityType = "score"
+    Service -> Service: processScoreEventList()
+    
+    Service -> PG: 查询现有 score（可选）
+    activate PG
+    PG --> Service: score record
+    deactivate PG
+    
+    Service -> Service: validateAndInflateScore()\n验证 score body
+    Service -> Service: 按 timestamp 排序\n合并所有事件
+    Service -> Service: 转换 metadata
+    
+    Service -> CHWriter: addToQueue(Scores, scoreRecord)
+    
+else entityType = "dataset_run_item"
+    Service -> Service: processDatasetRunItemEventList()
+    
+    Service -> PG: 查询 datasetRuns\n获取 run 元数据
+    activate PG
+    PG --> Service: dataset run info
+    deactivate PG
+    
+    Service -> PG: getDatasetItemById()\n获取 dataset item 数据
+    activate PG
+    PG --> Service: dataset item (input, expectedOutput)
+    deactivate PG
+    
+    Service -> Service: 合并 run + item 信息
+    Service -> Service: 转换 metadata
+    
+    Service -> CHWriter: addToQueue(DatasetRunItems, record)
+end
+
+Service --> Worker: 处理完成
+deactivate Service
+
+== 9. ClickHouse 批量写入 ==
+
+note over CHWriter: ClickhouseWriter 管理内存队列\n定期 flush（默认 5 秒）
+
+Worker --> Queue: job 完成
+deactivate Worker
+
+... 定期触发 flush ...
+
+CHWriter -> CHWriter: flush()\n检查所有表的队列
+
+loop 遍历每个表（Traces, Observations, Scores 等）
+    alt 队列有数据
+        CHWriter -> CH: insert({ table, values })\n批量写入记录
+        activate CH
+        CH --> CHWriter: 成功
+        deactivate CH
+        
+        CHWriter -> CHWriter: 清空该表队列
+    end
+end
+
+note over CHWriter,CH: **批量写入优势**：\n- 减少网络往返\n- 提高 ClickHouse 吞吐量\n- 单次写入数千条记录
+
+== 错误处理 ==
+
+alt 发生 S3 SlowDown 错误
+    Worker -> Redis: markProjectS3Slowdown(projectId)
+    activate Redis
+    Redis --> Worker: 标记成功（30 分钟过期）
+    deactivate Redis
+    
+    Worker -> Worker: logger.warn(\n"S3 SlowDown, marking for secondary queue")
+    Worker -> Worker: throw error\n触发 BullMQ 重试
+    
+    note over Queue: BullMQ 配置：\n- 最多重试 6 次\n- 指数退避（5s 起）\n- 失败任务保留 100,000 个
+end
+
+@enduml

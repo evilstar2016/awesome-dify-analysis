@@ -1,0 +1,468 @@
+@startuml Tool Call Multi-Turn Conversation
+
+title Playground 工具调用多轮对话流程
+
+actor "用户\n(User)" as User
+participant "Playground\nUI" as UI
+participant "Messages\nEditor" as Editor
+participant "Playground\nContext" as Context
+participant "API\nHandler" as API
+participant "OpenAI\nAPI" as OpenAI
+
+== 配置工具 ==
+
+User -> UI: 打开 "Tools" 面板
+activate UI
+
+UI -> UI: 显示工具配置界面
+
+User -> UI: 点击 "Add Tool"
+deactivate UI
+
+UI -> Context: addTool()
+activate Context
+
+Context -> Context: 创建新工具\nnewTool = {\n  id: uuid(),\n  name: "",\n  description: "",\n  parameters: {\n    type: "object",\n    properties: {},\n    required: []\n  }\n}
+
+Context -> Context: setTools([...tools, newTool])
+deactivate Context
+
+UI <-- Context: 工具列表更新
+
+User <-- UI: 显示空白工具表单
+
+User -> UI: 填写工具定义：\n- Name: "get_weather"\n- Description: "Get weather for a location"\n- Parameters: {\n    location: string (required),\n    unit: "celsius" | "fahrenheit"\n  }
+activate UI
+
+UI -> Context: updateTool(toolId, updates)
+activate Context
+
+Context -> Context: setTools(\n  tools.map(t => \n    t.id === toolId \n      ? { ...t, ...updates } \n      : t\n  )\n)
+
+note right of Context
+  工具定义：
+  {
+    id: "tool-123",
+    name: "get_weather",
+    description: "Get weather for a location",
+    parameters: {
+      type: "object",
+      properties: {
+        location: {
+          type: "string",
+          description: "City name"
+        },
+        unit: {
+          type: "string",
+          enum: ["celsius", "fahrenheit"],
+          default: "celsius"
+        }
+      },
+      required: ["location"]
+    }
+  }
+end note
+
+Context -> Context: 保存到 cache\nlocalStorage.setItem(cacheKey, cache)
+deactivate Context
+
+UI <-- Context: 工具配置完成
+deactivate UI
+
+User <-- UI: 显示工具配置
+
+== 第一轮：用户询问 ==
+
+User -> Editor: 输入消息：\n"What's the weather in San Francisco?"
+activate Editor
+
+Editor -> Context: updateMessage(messageId, {\n  content: "What's the weather..."\n})
+activate Context
+
+Context -> Context: setMessages(updatedMessages)
+
+Context -> Context: 保存到 cache
+deactivate Context
+deactivate Editor
+
+User -> UI: 点击 "Run" 按钮
+activate UI
+
+UI -> Context: handleSubmit(streaming=true)
+activate Context
+
+Context -> Context: setIsStreaming(true)
+
+Context -> Context: 编译消息
+
+Context -> API: POST /api/chatCompletion
+activate API
+
+note right of API
+  Request Body:
+  {
+    messages: [
+      {
+        type: "system",
+        role: "system",
+        content: "You are a helpful assistant."
+      },
+      {
+        type: "user",
+        role: "user",
+        content: "What's the weather in San Francisco?"
+      }
+    ],
+    modelParams: {
+      provider: "openai",
+      model: "gpt-4-turbo"
+    },
+    tools: [
+      {
+        name: "get_weather",
+        description: "Get weather for a location",
+        parameters: {...}
+      }
+    ],
+    streaming: false
+  }
+end note
+
+API -> API: 验证和授权
+
+API -> OpenAI: POST /v1/chat/completions
+activate OpenAI
+
+note right of OpenAI
+  OpenAI Request:
+  {
+    model: "gpt-4-turbo",
+    messages: [...],
+    tools: [
+      {
+        type: "function",
+        function: {
+          name: "get_weather",
+          description: "Get weather...",
+          parameters: {...}
+        }
+      }
+    ],
+    tool_choice: "auto"
+  }
+end note
+
+OpenAI -> OpenAI: LLM 决定调用工具
+
+OpenAI --> API: Response with tool_calls
+deactivate OpenAI
+
+note right of API
+  Response:
+  {
+    choices: [{
+      message: {
+        role: "assistant",
+        tool_calls: [{
+          id: "call_abc123",
+          type: "function",
+          function: {
+            name: "get_weather",
+            arguments: '{"location":"San Francisco","unit":"fahrenheit"}'
+          }
+        }]
+      }
+    }]
+  }
+end note
+
+API --> Context: 返回 tool calls
+deactivate API
+
+Context -> Context: 解析 tool calls\nconst toolCalls = response.toolCalls
+
+Context -> Context: 添加 assistant-tool-call 消息\nconst assistantMsg = {\n  id: uuid(),\n  type: "assistant-tool-call",\n  role: "assistant",\n  toolCalls: [\n    {\n      id: "call_abc123",\n      name: "get_weather",\n      arguments: '{"location":"San Francisco","unit":"fahrenheit"}'\n    }\n  ]\n}
+
+Context -> Context: setMessages([...messages, assistantMsg])
+
+Context -> Context: 为每个 tool call 添加\n空的 tool-result 消息
+
+loop 每个 tool call
+
+  Context -> Context: const toolResultMsg = {\n  id: uuid(),\n  type: "tool-result",\n  role: "tool",\n  toolCallId: "call_abc123",\n  result: "", // 用户填写\n  _originalRole: "get_weather" // 用于修复\n}
+
+  Context -> Context: setMessages([...messages, toolResultMsg])
+
+end
+
+Context -> Context: setOutputToolCalls(toolCalls)
+
+Context -> Context: setIsStreaming(false)
+
+Context -> Context: 保存到 cache
+deactivate Context
+
+UI <-- Context: 执行完成
+
+deactivate UI
+
+User <-- UI: 显示 tool call 消息
+
+note right of UI
+  UI 显示：
+  
+  [Assistant Tool Call]
+  📞 get_weather
+  Arguments:
+  {
+    "location": "San Francisco",
+    "unit": "fahrenheit"
+  }
+  
+  [Tool Result] ⚠️ 待填写
+  tool_call_id: call_abc123
+  Result: [空白输入框]
+end note
+
+== 第二轮：填写工具结果 ==
+
+User -> Editor: 在 tool result 消息框中填写：\n"72°F, Sunny, Light breeze"
+activate Editor
+
+Editor -> Context: updateMessage(toolResultMessageId, {\n  result: "72°F, Sunny, Light breeze"\n})
+activate Context
+
+Context -> Context: setMessages(updatedMessages)
+
+Context -> Context: 保存到 cache
+deactivate Context
+deactivate Editor
+
+note right of Context
+  当前消息列表：
+  1. [system] "You are..."
+  2. [user] "What's the weather..."
+  3. [assistant-tool-call] toolCalls: [...]
+  4. [tool-result] result: "72°F, Sunny..."
+end note
+
+User -> UI: 再次点击 "Run" 按钮\n（继续对话）
+activate UI
+
+UI -> Context: handleSubmit(streaming=true)
+activate Context
+
+Context -> Context: 编译消息\n（包含 tool result）
+
+Context -> Context: 修复 tool_call_id\n（如果为空）
+
+note right of Context
+  ID 修复逻辑（chatCompletionHandler）：
+  
+  for each tool-result message:
+    if toolCallId is empty:
+      1. 反向遍历 assistant-tool-call 消息
+      2. 查找 toolCall.name === msg._originalRole
+      3. 复制匹配的 toolCall.id
+      4. 填充 toolCallId
+  
+  这解决了 LangGraph 等框架
+  不提供 tool_call_id 的问题
+  
+  代码片段：
+  const matchingToolCall = prevMsg.toolCalls.find(
+    tc => tc.name === msg._originalRole
+  )
+end note
+
+Context -> API: POST /api/chatCompletion
+activate API
+
+note right of API
+  Request Body:
+  {
+    messages: [
+      {type: "system", role: "system", content: "..."},
+      {type: "user", role: "user", content: "What's..."},
+      {
+        type: "assistant-tool-call",
+        role: "assistant",
+        tool_calls: [{
+          id: "call_abc123",
+          name: "get_weather",
+          arguments: '{"location":"San Francisco",...}'
+        }]
+      },
+      {
+        type: "tool-result",
+        role: "tool",
+        tool_call_id: "call_abc123",
+        result: "72°F, Sunny, Light breeze"
+      }
+    ],
+    tools: [...],
+    streaming: true
+  }
+end note
+
+API -> API: 转换为 OpenAI 格式
+
+note right of API
+  OpenAI 消息格式：
+  [
+    {role: "system", content: "..."},
+    {role: "user", content: "What's..."},
+    {
+      role: "assistant",
+      tool_calls: [{
+        id: "call_abc123",
+        type: "function",
+        function: {
+          name: "get_weather",
+          arguments: '{"location":"San Francisco",...}'
+        }
+      }]
+    },
+    {
+      role: "tool",
+      tool_call_id: "call_abc123",
+      content: "72°F, Sunny, Light breeze"
+    }
+  ]
+end note
+
+API -> OpenAI: POST /v1/chat/completions\n(stream=true)
+activate OpenAI
+
+OpenAI -> OpenAI: LLM 处理 tool result\n生成自然语言响应
+
+OpenAI --> API: 流式响应开始
+deactivate OpenAI
+
+API --> Context: StreamingTextResponse
+deactivate API
+
+loop 接收流式数据
+
+  Context -> Context: 接收 chunk
+  Context -> Context: 累积输出
+  
+  Context -> UI: 更新 output 状态
+  activate UI
+  
+  UI -> User: 实时显示输出
+  deactivate UI
+
+end
+
+Context -> Context: 流式响应完成
+
+note right of Context
+  最终输出：
+  "The current weather in San Francisco 
+  is 72°F and sunny with a light breeze. 
+  It's a beautiful day!"
+end note
+
+Context -> Context: setIsStreaming(false)
+
+Context -> Context: 保存到 cache
+deactivate Context
+
+UI <-- Context: 执行完成
+
+deactivate UI
+
+User <-- UI: 显示最终响应
+
+note right of UI
+  消息历史：
+  
+  [System]
+  You are a helpful assistant.
+  
+  [User]
+  What's the weather in San Francisco?
+  
+  [Assistant Tool Call]
+  📞 get_weather(location="San Francisco", unit="fahrenheit")
+  
+  [Tool Result]
+  tool_call_id: call_abc123
+  Result: 72°F, Sunny, Light breeze
+  
+  [Assistant]
+  The current weather in San Francisco is 72°F 
+  and sunny with a light breeze. It's a beautiful day!
+end note
+
+== 第三轮：继续对话（可选）==
+
+User -> Editor: 添加新的 user 消息：\n"Should I bring an umbrella?"
+activate Editor
+
+Editor -> Context: addMessage({\n  type: "user",\n  role: "user",\n  content: "Should I bring an umbrella?"\n})
+activate Context
+deactivate Context
+deactivate Editor
+
+User -> UI: 点击 "Run"
+activate UI
+
+UI -> Context: handleSubmit(streaming=true)
+activate Context
+
+note right of Context
+  消息列表包含完整历史：
+  - system message
+  - user query 1
+  - assistant tool call
+  - tool result
+  - assistant response
+  - user query 2 (新)
+end note
+
+Context -> API: POST /api/chatCompletion\n（包含完整历史）
+activate API
+
+API -> OpenAI: POST /v1/chat/completions
+activate OpenAI
+
+OpenAI -> OpenAI: 基于历史上下文\n（包括之前的天气信息）\n生成响应
+
+OpenAI --> API: 流式响应
+deactivate OpenAI
+
+API --> Context: StreamingTextResponse
+deactivate API
+
+Context -> Context: 接收流式输出
+
+note right of Context
+  输出：
+  "No, you don't need an umbrella! 
+  The weather is sunny, so you should 
+  be fine without one."
+end note
+
+Context -> Context: setIsStreaming(false)
+deactivate Context
+
+UI <-- Context: 完成
+deactivate UI
+
+User <-- UI: 显示响应
+
+note right of User
+  多轮对话完成！
+  
+  LLM 记住了：
+  - 天气是晴天
+  - 温度 72°F
+  - 有微风
+  
+  基于这些信息回答了
+  是否需要雨伞的问题
+end note
+
+@enduml

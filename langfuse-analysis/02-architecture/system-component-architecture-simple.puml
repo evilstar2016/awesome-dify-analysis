@@ -1,0 +1,162 @@
+@startuml Langfuse System Component Architecture - Simple
+!theme plain
+skinparam componentStyle rectangle
+skinparam backgroundColor white
+skinparam Package { 
+  BackgroundColor LightGray
+  FontColor Blue
+}
+skinparam component {
+  BackgroundColor LightBlue
+  BorderColor Black
+}
+skinparam database {
+  BackgroundColor LightYellow
+  BorderColor DarkGreen
+}
+skinparam cloud {
+  BackgroundColor WhiteSmoke
+  BorderColor Gray
+}
+
+' ========== 外部用户 ==========
+actor "用户" as User
+actor "SDK" as SDK
+
+' ========== Layer 1: 前端层 ==========
+package "前端层 (Next.js + React)" {
+  [Pages 页面] as Pages
+  [Components 组件] as Components
+}
+
+' ========== Layer 2: API 层 ==========
+package "API 层 (tRPC)" {
+  [60+ API 路由器] as API
+  [Auth 认证] as Auth
+}
+
+' ========== Layer 3: 业务层 ==========
+package "业务层 (Features)" {
+  [Traces 追踪] as Traces
+  [Prompts 提示词] as Prompts
+  [Datasets 数据集] as Datasets
+  [Scores 评分] as Scores
+  [Playground 测试] as Playground
+  [Dashboard 仪表盘] as Dashboard
+}
+
+' ========== Layer 4: 数据访问层 ==========
+package "数据访问层" {
+  [Prisma ORM] as Prisma
+  [Kysely Query] as Kysely
+  [Redis Client] as RedisClient
+  [S3 Client] as S3Client
+}
+
+' ========== Layer 5: Worker 层 ==========
+package "Worker 异步处理" {
+  [BullMQ 队列] as Queue
+  [后台任务处理] as Worker
+}
+
+' ========== 数据库层 ==========
+database "PostgreSQL\n(元数据)" as PG
+database "ClickHouse\n(分析数据)" as CH
+database "Redis\n(缓存/队列)" as Redis
+database "S3\n(对象存储)" as S3
+
+' ========== 外部服务 ==========
+cloud "LLM 提供商" as LLM {
+  [OpenAI]
+  [Anthropic]
+  [Google]
+}
+
+cloud "第三方服务" as External {
+  [OAuth 认证]
+  [监控告警]
+  [消息通知]
+}
+
+' ========== 数据流 ==========
+
+' 用户交互
+User --> Pages
+SDK --> API
+
+' 前端到API
+Pages --> Components
+Pages --> API
+
+' API到业务层
+API --> Auth
+API --> Traces
+API --> Prompts
+API --> Datasets
+API --> Scores
+API --> Playground
+API --> Dashboard
+
+' 业务层到数据访问层
+Traces --> Prisma
+Traces --> Kysely
+Prompts --> Prisma
+Datasets --> Prisma
+Scores --> Kysely
+Dashboard --> Kysely
+Playground --> S3Client
+
+' 数据访问层到数据库
+Prisma --> PG
+Kysely --> CH
+RedisClient --> Redis
+S3Client --> S3
+
+' 业务层到Worker
+Traces --> Queue : 异步任务
+Datasets --> Queue : 评估任务
+Dashboard --> Queue : 导出任务
+
+' Worker到数据库
+Queue --> Redis
+Worker --> Prisma
+Worker --> Kysely
+Worker --> S3Client
+
+' 外部服务集成
+Auth --> External
+Playground --> LLM
+Worker --> LLM
+
+' ========== 注释 ==========
+note right of API
+  <b>tRPC API</b>
+  • 类型安全
+  • 端到端类型推导
+  • Zod 验证
+end note
+
+note right of Queue
+  <b>异步处理</b>
+  • 数据摄取
+  • LLM 评估
+  • 数据同步
+  • 批量导出
+end note
+
+note bottom of PG
+  <b>PostgreSQL</b>
+  元数据、配置、用户数据
+end note
+
+note bottom of CH
+  <b>ClickHouse</b>
+  追踪数据、时序分析
+end note
+
+note bottom of Redis
+  <b>Redis</b>
+  缓存 + BullMQ 队列
+end note
+
+@enduml

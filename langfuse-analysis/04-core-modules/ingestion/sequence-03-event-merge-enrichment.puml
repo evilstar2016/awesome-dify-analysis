@@ -1,0 +1,195 @@
+@startuml Event Merge and Enrichment
+title Ingestion 模块 - 事件合并和增强流程（Observation 为例）
+autonumber
+
+participant "IngestionService" as Service
+participant "Time Sorter" as Sorter
+participant "ClickHouse" as CH
+participant "PostgreSQL" as PG
+participant "Model Matcher" as ModelMatch
+participant "Tokenizer" as Token
+participant "Cost Calculator" as CostCalc
+participant "ClickhouseWriter" as CHWriter
+
+== 1. 事件列表接收 ==
+
+-> Service: processObservationEventList(\n  projectId, entityId,\n  observationEventList,\n  writeToStagingTables\n)
+activate Service
+
+note over Service: 参数：\n- projectId\n- entityId (observationId)\n- observationEventList\n  [event1, event2, ...]\n- writeToStagingTables\n  (实验性功能标志)
+
+alt observationEventList.length = 0
+    Service ->]: 提前返回
+end
+
+== 2. 时间排序 ==
+
+Service -> Sorter: toTimeSortedEventList(observationEventList)
+activate Sorter
+Sorter -> Sorter: 按 event.timestamp 升序排序
+Sorter --> Service: timeSortedEvents\n[早期事件 → 晚期事件]
+deactivate Sorter
+
+note over Service: **排序目的**：\n确保按时间顺序合并\ncreate 事件优先\nupdate 事件按序应用
+
+Service -> Service: 提取 observation type\n(SPAN/GENERATION/EVENT)\n和最小 startTime
+
+== 3. 并行查询数据（并行语义，以顺序显示） ==
+
+note over Service: 并行发起查询：ClickHouse & Prompt（如果引用）
+
+Service -> CH: getClickhouseRecord(\n+  table=Observations,\n+  id=entityId,\n+  projectId=projectId,\n+  type=type,\n+  startTime >= minStartTime\n+)
+activate CH
+
+note right of CH: 条件：\n+- id = entityId\n+- project_id = projectId\n+- type = type\n+- start_time >= minStartTime\n+(避免查询过多历史记录)
+
+alt 找到现有记录
+    CH --> Service: clickhouseObservationRecord\n+(existing observation)
+    Service -> Service: recordIncrement(\n+lookup.hit, store=clickhouse)
+else 未找到
+    CH --> Service: null
+end
+deactivate CH
+
+Service -> Service: 提取 promptId, promptVersion\n+从 observationEventList
+note over Service: 查询 Prompt 信息（如果存在引用）
+
+alt 有 promptId 或 promptVersion
+    Service -> PG: promptService.getPrompt(\n+projectId, promptId, promptVersion)
+    activate PG
+    note right of PG: Prompt Lookup:\n+- 精确匹配 id + version\n+- 或最新 version\n+- 或 production label
+    alt 找到 prompt
+        PG --> Service: prompt\n+{ id, name, version }
+    else 未找到
+        PG --> Service: null
+    end
+    deactivate PG
+else 无 prompt 引用
+    Service -> Service: prompt = null
+end
+
+note over Service: **并行查询优势**：\n减少总等待时间\nClickHouse + PostgreSQL 同步查询
+
+== 4. 映射事件到记录 ==
+
+Service -> Service: mapObservationEventsToRecords(\n  timeSortedEvents,\n  projectId, entityId,\n  prompt\n)
+
+note over Service: 为每个事件创建\nObservationRecordInsertType：\n- 基础字段：id, trace_id, type\n- 时间字段：start_time, end_time\n- 内容字段：input, output, metadata\n- Prompt 字段：prompt_id, prompt_name,\n  prompt_version（来自查询）\n- Model 字段：provided_model_name\n- Usage 字段：provided_usage_details,\n  provided_cost_details
+
+Service -> Service: observationRecords\n[record1, record2, ...]
+
+== 5. 合并记录 ==
+
+Service -> Service: mergeObservationRecords(\n  observationRecords,\n  clickhouseObservationRecord\n)
+
+note over Service: **合并逻辑（按序应用）**：\n1. 从 ClickHouse 记录开始（如果有）\n2. 依次应用每个 observationRecord\n3. 使用 overwriteObject()：\n   - 大部分字段：新值覆盖旧值\n   - metadata：深度合并\n   - tags：合并去重\n   - 非覆盖字段：id, project_id,\n     trace_id, created_at
+
+Service -> Service: mergedObservationRecord
+
+note over Service: **特殊处理**：\n- level：默认 "DEFAULT"\n- input/output：取最后非空值\n- created_at：保留最早时间
+
+Service -> Service: 设置 created_at\n= clickhouse?.created_at\n  || createdAtTimestamp
+
+Service -> Service: 从 timeSortedEvents 反向查找\n最后非空的 input/output
+
+Service -> Service: mergedObservationRecord.input\n= 最后非空 input || clickhouse.input\nmergedObservationRecord.output\n= 最后非空 output || clickhouse.output
+
+== 6. Usage 和 Cost 增强 ==
+
+Service -> Service: getGenerationUsage(\n  projectId,\n  mergedObservationRecord\n)
+
+note over Service: **Usage 增强流程**
+
+Service -> ModelMatch: findModel(\n  projectId,\n  provided_model_name\n)
+activate ModelMatch
+
+note right of ModelMatch: 模型匹配逻辑：\n1. 精确匹配 modelName\n2. 前缀匹配（如 gpt-4*）\n3. 返回 model + pricingTiers
+
+alt 找到模型
+    ModelMatch --> Service: { model, pricingTiers }
+else 未找到
+    ModelMatch --> Service: { model: null, pricingTiers: [] }
+end
+deactivate ModelMatch
+
+Service -> Service: getUsageUnits(\n  observationRecord, internalModel\n)
+
+alt provided_usage_details 存在
+    Service -> Service: 直接使用提供的 usage
+    Service -> Service: final_usage_details\n= provided_usage_details
+else provided_usage_details 不存在
+    Service -> Token: tokenCountAsync(\n  model,\n  input, output\n)
+    activate Token
+    
+    note right of Token: Tokenization：\n- 使用 tiktoken 库\n- 按模型编码器计算\n- 返回 input/output tokens
+    
+    Token --> Service: { inputTokens, outputTokens }
+    deactivate Token
+    
+    Service -> Service: final_usage_details = {\n  input: inputTokens,\n  output: outputTokens,\n  total: inputTokens + outputTokens\n}
+end
+
+Service -> Service: matchPricingTier(\n  pricingTiers,\n  final_usage_details\n)
+
+note over Service: **Pricing Tier 匹配**：\n基于 usage 范围\n选择合适的价格层级
+
+alt 匹配到 tier
+    Service -> Service: usage_pricing_tier_id\nusage_pricing_tier_name\nmodelPrices = tier.prices
+else 未匹配
+    Service -> Service: modelPrices = []
+end
+
+Service -> CostCalc: calculateUsageCosts(\n  modelPrices,\n  observationRecord,\n  final_usage_details\n)
+activate CostCalc
+
+note right of CostCalc: Cost 计算：\nforeachToken type:\n  cost = tokens * price\ntotal_cost = sum(all costs)
+
+CostCalc --> Service: final_cost_details\n{ cost_details, total_cost }
+deactivate CostCalc
+
+Service -> Service: logger.debug(\n"Calculated costs and usage",\n{ cost, usage, pricingTier }\n)
+
+Service -> Service: finalObservationRecord = {\n  ...mergedObservationRecord,\n  usage_details,\n  cost_details,\n  total_cost,\n  internal_model_id,\n  usage_pricing_tier_id,\n  usage_pricing_tier_name\n}
+
+== 7. 向后兼容处理 ==
+
+alt trace_id 为空（SDK < 2.0.0）
+    Service -> Service: 创建 wrapper trace\nwrapperTraceRecord = {\n  id: observation.id,\n  timestamp: observation.start_time,\n  project_id, environment,\n  ...\n}
+    
+    Service -> CHWriter: addToQueue(Traces,\nwrapperTraceRecord)
+    
+    Service -> Service: finalObservationRecord.trace_id\n= observation.id
+    
+    note right: **向后兼容**：\n为旧版 SDK 创建的\nobservation 自动生成\n关联的 trace
+end
+
+== 8. 写入队列 ==
+
+Service -> CHWriter: addToQueue(Observations,\nfinalObservationRecord)
+
+note over CHWriter: 添加到内存队列\n等待定期 flush
+
+alt writeToStagingTables = true
+    Service -> Service: 计算 s3_first_seen_timestamp\n= getPartitionAwareTimestamp(\ncreatedAtTimestamp)
+    
+    note right: **分区感知时间戳**：\n- 最近 3.5 分钟：保持原时间\n- 超过 3.5 分钟：使用当前时间\n目的：锁定分区，避免\n过期分区接收更新
+    
+    Service -> Service: stagingRecord = {\n  ...finalObservationRecord,\n  s3_first_seen_timestamp\n}
+    
+    Service -> CHWriter: addToQueue(\nObservationsBatchStaging,\nstagingRecord)
+    
+    note right: **实验性功能**：\nStaging 表用于\n批量传播到 events 表
+end
+
+Service -->]: 处理完成
+deactivate Service
+
+note over CHWriter: **后续：**\nClickhouseWriter 定期 flush\n批量写入 ClickHouse
+
+== Trace 和 Score 流程 ==
+
+note over Service: **Trace 处理流程类似**：\n1. 时间排序\n2. 查询 ClickHouse 现有记录\n3. 映射事件到记录\n4. 合并记录（metadata, tags）\n5. 处理 input/output（最后非空）\n6. Upsert session (PostgreSQL)\n7. 写入 Traces 表\n8. 可选：转换为 staging observation
+
+note over Service: **Score 处理流程**：\n1. 时间排序\n2. 查询 ClickHouse 现有记录\n3. validateAndInflateScore()\n   验证 score body\n4. 映射事件到记录\n5. 合并记录\n6. 写入 Scores 表\n\n区别：Score 无需 enrichment\n（无 model/usage/cost 计算）
+
+@enduml

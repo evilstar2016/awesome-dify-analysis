@@ -1,0 +1,114 @@
+@startuml
+!theme plain
+
+title 四种评分来源对比
+
+rectangle "**ANNOTATION** 人工标注" as ANN #LightBlue {
+  card "特点" as ANN_F
+  card "成本" as ANN_C
+  card "准确性" as ANN_A
+  card "场景" as ANN_S
+}
+
+rectangle "**API** 自动评分" as API #LightGreen {
+  card "特点" as API_F
+  card "成本" as API_C
+  card "准确性" as API_A
+  card "场景" as API_S
+}
+
+rectangle "**EVAL** 批量评估" as EVAL #LightCoral {
+  card "特点" as EVAL_F
+  card "成本" as EVAL_C
+  card "准确性" as EVAL_A
+  card "场景" as EVAL_S
+}
+
+rectangle "**FEEDBACK** 用户反馈" as FEED #LightYellow {
+  card "特点" as FEED_F
+  card "成本" as FEED_C
+  card "准确性" as FEED_A
+  card "场景" as FEED_S
+}
+
+note right of ANN_F
+  事后人工评审
+  需要专业知识
+  可提供详细评论
+end note
+
+note right of ANN_C
+  高 (人力成本)
+end note
+
+note right of ANN_A
+  ⭐⭐⭐⭐⭐ (最准确)
+end note
+
+note right of ANN_S
+  Ground Truth 构建
+  训练数据标注
+  法律/医疗等专业领域
+end note
+
+note right of API_F
+  实时自动执行
+  可编程规则
+  100% 覆盖
+end note
+
+note right of API_C
+  低 (计算成本)
+end note
+
+note right of API_A
+  ⭐⭐⭐ (规则准确)
+end note
+
+note right of API_S
+  语法检查
+  格式验证
+  性能监控
+end note
+
+note right of EVAL_F
+  离线批量处理
+  使用 LLM-as-Judge
+  可重复执行
+end note
+
+note right of EVAL_C
+  中 (API 调用成本)
+end note
+
+note right of EVAL_A
+  ⭐⭐⭐⭐ (模型准确)
+end note
+
+note right of EVAL_S
+  模型对比测试
+  回归测试
+  历史数据分析
+end note
+
+note right of FEED_F
+  用户主动触发
+  真实使用反馈
+  可能有偏差
+end note
+
+note right of FEED_C
+  无 (用户自愿)
+end note
+
+note right of FEED_A
+  ⭐⭐⭐ (主观评价)
+end note
+
+note right of FEED_S
+  满意度调查
+  A/B 测试
+  产品迭代
+end note
+
+@enduml

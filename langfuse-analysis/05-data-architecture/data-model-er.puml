@@ -1,0 +1,357 @@
+@startuml
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam classBackgroundColor #E3F2FD
+skinparam classBorderColor #1976D2
+skinparam arrowColor #424242
+
+title Langfuse 核心数据模型 ER 图
+
+' 用户与认证
+entity "User" as user {
+  * id : String <<PK>>
+  --
+  * email : String <<UNIQUE>>
+  name : String
+  password : String
+  image : String
+  * admin : Boolean
+  emailVerified : DateTime
+  featureFlags : String[]
+  * createdAt : DateTime
+  * updatedAt : DateTime
+}
+
+entity "Account" as account {
+  * id : String <<PK>>
+  --
+  * userId : String <<FK>>
+  * provider : String
+  * providerAccountId : String
+  type : String
+  refresh_token : String
+  access_token : String
+  expires_at : Int
+  token_type : String
+  scope : String
+  id_token : String
+}
+
+entity "Session" as session {
+  * id : String <<PK>>
+  --
+  * sessionToken : String <<UNIQUE>>
+  * userId : String <<FK>>
+  * expires : DateTime
+}
+
+' 组织与项目
+entity "Organization" as org {
+  * id : String <<PK>>
+  --
+  * name : String
+  * createdAt : DateTime
+  * updatedAt : DateTime
+  cloudConfig : Json
+  metadata : Json
+  cloudBillingCycleAnchor : DateTime
+  cloudCurrentCycleUsage : Int
+  aiFeaturesEnabled : Boolean
+}
+
+entity "OrganizationMembership" as orgMember {
+  * id : String <<PK>>
+  --
+  * orgId : String <<FK>>
+  * userId : String <<FK>>
+  * role : Role
+  * createdAt : DateTime
+  * updatedAt : DateTime
+}
+
+entity "Project" as project {
+  * id : String <<PK>>
+  --
+  * orgId : String <<FK>>
+  * name : String
+  * createdAt : DateTime
+  * updatedAt : DateTime
+  deletedAt : DateTime
+  retentionDays : Int
+  metadata : Json
+}
+
+entity "ProjectMembership" as projMember {
+  --
+  * projectId : String <<PK,FK>>
+  * userId : String <<PK,FK>>
+  * orgMembershipId : String <<FK>>
+  * role : Role
+  * createdAt : DateTime
+  * updatedAt : DateTime
+}
+
+' API 密钥
+entity "ApiKey" as apikey {
+  * id : String <<PK>>
+  --
+  * publicKey : String <<UNIQUE>>
+  * hashedSecretKey : String <<UNIQUE>>
+  fastHashedSecretKey : String <<UNIQUE>>
+  * displaySecretKey : String
+  * createdAt : DateTime
+  note : String
+  lastUsedAt : DateTime
+  expiresAt : DateTime
+  projectId : String <<FK>>
+  orgId : String <<FK>>
+  * scope : ApiKeyScope
+}
+
+' Prompt 管理
+entity "Prompt" as prompt {
+  * id : String <<PK>>
+  --
+  * projectId : String <<FK>>
+  * name : String
+  * version : Int
+  * prompt : Text
+  type : String
+  * isActive : Boolean
+  config : Json
+  tags : String[]
+  labels : String[]
+  * createdAt : DateTime
+  * updatedAt : DateTime
+  createdBy : String
+  updatedBy : String
+}
+
+' 数据集
+entity "Dataset" as dataset {
+  * id : String <<PK>>
+  --
+  * projectId : String <<FK>>
+  * name : String
+  description : String
+  metadata : Json
+  * createdAt : DateTime
+  * updatedAt : DateTime
+}
+
+entity "DatasetItem" as datasetItem {
+  * id : String <<PK>>
+  --
+  * datasetId : String <<FK>>
+  input : Json
+  expectedOutput : Json
+  metadata : Json
+  sourceObservationId : String
+  sourceTraceId : String
+  * status : String
+  * createdAt : DateTime
+  * updatedAt : DateTime
+}
+
+entity "DatasetRun" as datasetRun {
+  * id : String <<PK>>
+  --
+  * datasetId : String <<FK>>
+  * name : String
+  description : String
+  metadata : Json
+  * createdAt : DateTime
+  * updatedAt : DateTime
+}
+
+' 评分配置
+entity "ScoreConfig" as scoreConfig {
+  * id : String <<PK>>
+  --
+  * projectId : String <<FK>>
+  * name : String
+  * dataType : String
+  * isArchived : Boolean
+  categories : Json
+  minValue : Float
+  maxValue : Float
+  description : String
+  * createdAt : DateTime
+  * updatedAt : DateTime
+}
+
+' 模型配置
+entity "Model" as model {
+  * id : String <<PK>>
+  --
+  * projectId : String <<FK>>
+  * modelName : String
+  * matchPattern : String
+  startDate : DateTime
+  * unit : String
+  inputPrice : Decimal
+  outputPrice : Decimal
+  totalPrice : Decimal
+  tokenizerId : String
+  tokenizerConfig : Json
+  * createdAt : DateTime
+  * updatedAt : DateTime
+}
+
+' LLM API 密钥
+entity "LlmApiKeys" as llmApiKey {
+  * id : String <<PK>>
+  --
+  * projectId : String <<FK>>
+  * provider : String
+  * adapter : String
+  * displaySecretKey : String
+  * secretKey : String
+  baseURL : String
+  customModels : String[]
+  * withDefaultModels : Boolean
+  extraHeaders : String
+  extraHeaderKeys : String[]
+  config : Json
+  * createdAt : DateTime
+  * updatedAt : DateTime
+}
+
+' 评估模板
+entity "EvalTemplate" as evalTemplate {
+  * id : String <<PK>>
+  --
+  * projectId : String <<FK>>
+  * name : String
+  * version : Int
+  * prompt : Text
+  * model : String
+  * modelParams : Json
+  * outputSchema : Json
+  * provider : String
+  vars : String[]
+  * createdAt : DateTime
+  * updatedAt : DateTime
+}
+
+' 任务配置
+entity "JobConfiguration" as jobConfig {
+  * id : String <<PK>>
+  --
+  * projectId : String <<FK>>
+  * jobType : String
+  * status : String
+  evalTemplateId : String <<FK>>
+  targetObject : String
+  filter : Json
+  * samplingRate : Float
+  * delay : Int
+  variableMapping : Json
+  scoreName : String
+  * createdAt : DateTime
+  * updatedAt : DateTime
+}
+
+' 集成
+entity "PosthogIntegration" as posthog {
+  * id : String <<PK>>
+  --
+  * projectId : String <<FK,UNIQUE>>
+  * apiKey : String
+  * host : String
+  * enabled : Boolean
+  * createdAt : DateTime
+  * updatedAt : DateTime
+}
+
+entity "SlackIntegration" as slack {
+  * projectId : String <<PK,FK,UNIQUE>>
+  --
+  * workspaceId : String
+  * accessToken : String
+  teamName : String
+  webhookUrl : String
+  * createdAt : DateTime
+  * updatedAt : DateTime
+}
+
+' 关系定义
+
+' 用户相关
+user ||--o{ account : "has"
+user ||--o{ session : "has"
+user ||--o{ orgMember : "member of"
+user ||--o{ projMember : "member of"
+
+' 组织相关
+org ||--o{ orgMember : "has members"
+org ||--o{ project : "owns"
+org ||--o{ apikey : "has (org-level)"
+
+' 项目相关
+project ||--o{ projMember : "has members"
+project ||--o{ apikey : "has (project-level)"
+project ||--o{ prompt : "has"
+project ||--o{ dataset : "has"
+project ||--o{ scoreConfig : "has"
+project ||--o{ model : "has"
+project ||--o{ llmApiKey : "has"
+project ||--o{ evalTemplate : "has"
+project ||--o{ jobConfig : "has"
+project ||--o| posthog : "has (0..1)"
+project ||--o| slack : "has (0..1)"
+
+' 成员关系
+orgMember ||--o{ projMember : "participates in"
+
+' 数据集相关
+dataset ||--o{ datasetItem : "contains"
+dataset ||--o{ datasetRun : "has runs"
+
+' 评估相关
+evalTemplate ||--o{ jobConfig : "used by"
+
+note right of user
+  **核心用户表**
+  - 支持多种认证方式
+  - admin 字段：超级管理员标识
+  - featureFlags：功能开关
+end note
+
+note right of org
+  **多租户组织**
+  - 顶层数据隔离单元
+  - cloudConfig：云版本计费配置
+  - 支持多项目
+end note
+
+note right of project
+  **项目（数据隔离）**
+  - 所有业务数据属于项目
+  - deletedAt：软删除
+  - retentionDays：数据保留策略
+end note
+
+note right of apikey
+  **API 密钥**
+  - 支持两种 scope
+  - fastHashedSecretKey：快速验证
+  - hashedSecretKey：bcrypt 慢速验证
+end note
+
+note bottom of prompt
+  **提示词版本管理**
+  - 支持多版本
+  - isActive：当前激活版本
+  - 支持标签和标记
+end note
+
+note bottom of dataset
+  **测试数据集**
+  - 用于评估和回归测试
+  - 支持多次运行
+  - 关联 trace 和 observation
+end note
+
+@enduml

@@ -1,0 +1,240 @@
+@startuml Annotation Score Creation Flow
+
+title Annotation Score 创建流程
+
+actor "标注者\n(User)" as User
+participant "Web\nUI" as WebUI
+participant "tRPC\nRouter" as TRPC
+participant "Score\nRepository" as ScoreRepo
+participant "Domain\nValidation" as Domain
+participant "PostgreSQL" as PG
+participant "ClickHouse" as CH
+participant "Audit\nLog" as Audit
+
+== 准备阶段 ==
+
+User -> WebUI: 打开标注队列\n(Annotation Queue)
+activate WebUI
+
+WebUI -> TRPC: annotationQueues.getNextItem(queueId, userId)
+activate TRPC
+
+TRPC -> PG: 查询待标注 item\n(status = "pending")
+activate PG
+return item 详情
+
+TRPC -> PG: 锁定 item\n(SET locked_by = userId)
+activate PG
+return success
+deactivate TRPC
+
+WebUI <-- TRPC: 返回 item\n{objectId, objectType, scoreConfigs}
+deactivate WebUI
+
+note right of WebUI
+  Item 包含：
+  - objectId: trace/observation ID
+  - objectType: "trace" | "observation"
+  - scoreConfigs: 需要标注的评分配置
+end note
+
+== 评分阶段 ==
+
+User -> WebUI: 对 item 评分\n(选择分类 / 输入数值)
+activate WebUI
+
+WebUI -> WebUI: 根据 scoreConfig\n渲染输入界面
+note right of WebUI
+  根据 dataType 渲染：
+  - NUMERIC: 滑动条或输入框
+  - CATEGORICAL: 下拉选择
+  - BOOLEAN: 开关或单选按钮
+end note
+
+User -> WebUI: 提交评分
+WebUI -> TRPC: scores.createAnnotationScore(\n  scoreTarget,\n  name, configId,\n  value, stringValue,\n  comment, queueId\n)
+activate TRPC
+
+== 验证阶段 ==
+
+TRPC -> TRPC: 权限检查\n(scores:CUD)
+note right of TRPC
+  需要 scores:CUD 权限
+  (Create, Update, Delete)
+end note
+
+TRPC -> PG: 验证 trace/observation\n是否存在且属于当前项目
+activate PG
+return trace/observation 详情
+
+alt 如果提供了 configId
+
+  TRPC -> PG: 获取 scoreConfig
+  activate PG
+  return config 详情
+  
+  TRPC -> Domain: validateDbScoreConfig(config)
+  activate Domain
+  return 验证通过
+  deactivate Domain
+  
+  note right of TRPC
+    Domain层验证 (packages/shared/src/domain/score-configs.ts)：
+    
+    NUMERIC:
+    - validateNumericRangeFields()
+    - 如果 config 设置了 minValue/maxValue
+      则验证 value 是否在范围内
+    
+    CATEGORICAL/BOOLEAN:
+    - validateCategories()
+    - 验证 stringValue 是否在
+      config.categories 的 label 列表中
+    - value 为类别对应的数值
+  end note
+  
+  alt 验证失败
+    Domain --> TRPC: throw InvalidRequestError
+    TRPC --> WebUI: 错误信息
+    WebUI --> User: 显示错误\n"值超出范围" 或\n"无效的类别"
+    [<-- User
+  end
+
+end
+
+== 查重阶段 ==
+
+TRPC -> ScoreRepo: searchExistingAnnotationScore(\n  projectId, traceId,\n  observationId, name,\n  configId, dataType\n)
+activate ScoreRepo
+
+ScoreRepo -> CH: 查询是否存在\n相同的 annotation score
+activate CH
+
+note right of CH
+  查询条件：
+  - project_id = ?
+  - trace_id = ?
+  - observation_id = ? (可为 NULL)
+  - name = ?
+  - author_user_id = ?
+  - queue_id = ? (可为 NULL)
+  - source = "ANNOTATION"
+  ORDER BY timestamp DESC
+  LIMIT 1
+end note
+
+return existing score (或 null)
+deactivate ScoreRepo
+
+alt 如果已存在相同 score
+
+  note right of TRPC
+    说明用户之前已对此 item
+    的此评分项进行过标注
+    （可能在同一队列中）
+    
+    则执行更新而非创建
+  end note
+  
+  TRPC -> ScoreRepo: upsertScore(\n  existingScore.id,\n  ...\n)
+  
+else 创建新 score
+
+  TRPC -> ScoreRepo: upsertScore(\n  newScoreId,\n  ...\n)
+
+end
+
+activate ScoreRepo
+
+== 写入阶段 ==
+
+Service -> CH: INSERT INTO scores\n(或 ALTER TABLE ... UPDATE)
+activate CH
+
+note right of CH
+  写入字段：
+  - id: score ID (新建或已存在)
+  - project_id, environment
+  - trace_id, observation_id
+  - session_id, dataset_run_id
+  - name, config_id, data_type
+  - value (NUMERIC)
+  - string_value (CATEGORICAL/BOOLEAN)
+  - source: "ANNOTATION"
+  - author_user_id: 当前用户 ID
+  - queue_id: 标注队列 ID
+  - comment: 用户备注
+  - metadata: 额外元数据
+  - timestamp: 评分时间
+  - created_at, updated_at
+end note
+
+return success
+deactivate Service
+
+== 审计阶段 ==
+
+TRPC -> Audit: recordAuditLog(\n  action: "score.create",\n  before: null,\n  after: scoreData\n)
+activate Audit
+
+Audit -> PG: INSERT INTO audit_logs
+activate PG
+return success
+
+deactivate Audit
+
+== 完成标注 ==
+
+TRPC -> PG: 更新标注队列 item\n(检查是否所有 scores 已完成)
+activate PG
+
+note right of PG
+  检查是否所有 scoreConfigs
+  都已有对应的 annotation score：
+  
+  IF all_scores_complete THEN
+    SET status = "completed"
+    SET completed_at = NOW()
+  END IF
+end note
+
+return success
+deactivate TRPC
+
+WebUI <-- TRPC: 返回创建的 score
+deactivate WebUI
+
+User <-- WebUI: 显示成功\n刷新 UI
+
+== 获取下一个 Item ==
+
+User -> WebUI: 继续标注
+activate WebUI
+
+WebUI -> TRPC: annotationQueues.getNextItem(queueId, userId)
+activate TRPC
+
+TRPC -> PG: 查询下一个 pending item
+activate PG
+return next item (或 null)
+
+alt 如果还有待标注 item
+  TRPC -> PG: 锁定 item
+  activate PG
+  return success
+  deactivate TRPC
+  
+  WebUI <-- TRPC: 返回 next item
+  deactivate WebUI
+  
+  User <-- WebUI: 显示下一个 item
+  
+else 队列已完成
+  deactivate TRPC
+  WebUI <-- TRPC: null
+  deactivate WebUI
+  
+  User <-- WebUI: 显示"队列已完成"
+end
+
+@enduml

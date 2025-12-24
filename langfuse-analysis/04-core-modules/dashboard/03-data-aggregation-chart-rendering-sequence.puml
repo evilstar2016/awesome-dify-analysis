@@ -1,0 +1,525 @@
+@startuml Data Aggregation and Chart Rendering Flow
+
+title 数据聚合和图表渲染详细流程
+
+participant "Dashboard\nWidget" as Widget
+participant "executeQuery\nFunction" as ExecQuery
+participant "QueryBuilder\nClass" as QB
+participant "ClickHouse" as CH
+participant "Base\nTimeSeries\nChart" as Chart
+participant "Tremor\nLineChart" as Tremor
+
+== 查询构建阶段 ==
+
+Widget -> Widget: 接收 Widget 配置
+
+note right of Widget
+  Widget 配置示例：
+  {
+    view: "observations",
+    dimensions: [
+      { field: "model" },
+      { field: "userId" }
+    ],
+    metrics: [
+      { measure: "totalTokens", agg: "sum" },
+      { measure: "calculatedTotalCost", agg: "sum" },
+      { measure: "latency", agg: "avg" }
+    ],
+    filters: [
+      { column: "type", value: ["GENERATION"] },
+      { column: "model", value: ["gpt-4", "gpt-3.5-turbo"] }
+    ],
+    timeDimension: { granularity: "day" }
+  }
+end note
+
+Widget -> ExecQuery: api.dashboard.executeQuery.useQuery()
+activate ExecQuery
+
+ExecQuery -> ExecQuery: 创建 QueryBuilder 实例\nconst queryBuilder = new QueryBuilder(chartConfig, version)
+
+ExecQuery -> QB: queryBuilder.build(query, projectId)
+activate QB
+
+== SQL 生成阶段 ==
+
+QB -> QB: 1. getViewDeclaration(viewName)\n解析 View → ViewDeclarationType
+
+QB -> QB: 2. 构建 SELECT 子句
+
+note right of QB
+  SELECT 子句构建规则：
+  
+  对于每个 metric：
+    {agg}({measure}) as {agg}_{measure}
+  
+  示例：
+    SUM(totalTokens) as sum_totalTokens
+    SUM(calculatedTotalCost) as sum_calculatedTotalCost
+    AVG(latency) as avg_latency
+end note
+
+QB -> QB: 3. 构建 GROUP BY 子句
+
+note right of QB
+  GROUP BY 子句构建：
+  
+  对于每个 dimension：
+    dimension.field
+  
+  如果有 timeDimension：
+    toStartOf{Granularity}(startTime) as time_dimension
+  
+  示例：
+    model,
+    userId,
+    toStartOfDay(startTime) as time_dimension
+end note
+
+QB -> QB: 4. 构建 WHERE 子句
+
+note right of QB
+  WHERE 子句构建：
+  
+  1. 项目过滤（必需）：
+     project_id = 'proj-123'
+  
+  2. 时间范围（必需）：
+     startTime >= '2024-12-10T00:00:00Z'
+     AND startTime <= '2024-12-17T23:59:59Z'
+  
+  3. 业务过滤：
+     type IN ['GENERATION']
+     AND model IN ['gpt-4', 'gpt-3.5-turbo']
+  
+  4. 过滤器类型处理：
+     - stringOptions: IN (...)
+     - datetime: >=, <=, BETWEEN
+     - number: =, >, <, BETWEEN
+     - string: =, LIKE
+end note
+
+QB -> QB: 5. 构建 ORDER BY 子句
+
+note right of QB
+  ORDER BY 默认规则：
+  
+  如果有 timeDimension：
+    ORDER BY time_dimension ASC
+  
+  如果用户指定 orderBy：
+    ORDER BY {field} {direction}
+  
+  示例：
+    ORDER BY time_dimension ASC, sum_totalTokens DESC
+end note
+
+QB -> QB: 6. 应用 LIMIT
+
+note right of QB
+  LIMIT 规则：
+  
+  - 时间序列图表：无 LIMIT（需要完整时间线）
+  - 排名图表：LIMIT = chartConfig.row_limit ?? 1000
+  - Pivot Table：LIMIT = chartConfig.row_limit ?? 1000
+  
+  防止查询结果过大
+end note
+
+QB -> QB: 生成最终 SQL
+
+note right of QB
+  最终 SQL（完整示例）：
+  
+  SELECT
+    model,
+    userId,
+    toStartOfDay(startTime) as time_dimension,
+    SUM(totalTokens) as sum_totalTokens,
+    SUM(calculatedTotalCost) as sum_calculatedTotalCost,
+    AVG(latency) as avg_latency
+  FROM observations
+  WHERE
+    project_id = 'proj-123'
+    AND type IN ['GENERATION']
+    AND model IN ['gpt-4', 'gpt-3.5-turbo']
+    AND startTime >= '2024-12-10T00:00:00Z'
+    AND startTime <= '2024-12-17T23:59:59Z'
+  GROUP BY
+    model,
+    userId,
+    time_dimension
+  ORDER BY
+    time_dimension ASC
+end note
+
+QB --> ExecQuery: 返回 { query, parameters }
+deactivate QB
+
+== ClickHouse 查询执行 ==
+
+ExecQuery -> CH: queryClickhouse({ query, params })
+activate CH
+
+CH -> CH: 1. 解析查询计划
+
+note right of CH
+  查询优化：
+  - 使用 project_id 分区过滤
+  - 利用 startTime 时间索引
+  - 列式扫描相关列
+  - 并行聚合计算
+end note
+
+CH -> CH: 2. 扫描数据\n（列式存储）
+
+note right of CH
+  列式扫描优势：
+  - 只读取需要的列（model, userId, totalTokens, etc.）
+  - 跳过无关列（提升 I/O 效率）
+  - 列压缩减少磁盘读取
+end note
+
+CH -> CH: 3. 应用过滤条件\n（WHERE 子句）
+
+note right of CH
+  过滤顺序（优化）：
+  1. project_id（分区过滤，最快）
+  2. startTime（时间索引）
+  3. type, model（列过滤）
+end note
+
+CH -> CH: 4. 分组聚合\n（GROUP BY）
+
+note right of CH
+  聚合计算：
+  
+  按 (model, userId, time_dimension) 分组
+  
+  对每组计算：
+    - SUM(totalTokens)
+    - SUM(calculatedTotalCost)
+    - AVG(latency)
+  
+  使用 HashMap 或 Aggregating Merge Tree
+end note
+
+CH -> CH: 5. 排序\n（ORDER BY）
+
+CH -> CH: 6. 返回结果集
+
+note right of CH
+  查询结果示例：
+  [
+    {
+      model: "gpt-4",
+      userId: "user-1",
+      time_dimension: "2024-12-10T00:00:00Z",
+      sum_totalTokens: 15000,
+      sum_calculatedTotalCost: 0.45,
+      avg_latency: 1200
+    },
+    {
+      model: "gpt-4",
+      userId: "user-2",
+      time_dimension: "2024-12-10T00:00:00Z",
+      sum_totalTokens: 20000,
+      sum_calculatedTotalCost: 0.60,
+      avg_latency: 1350
+    },
+    {
+      model: "gpt-3.5-turbo",
+      userId: "user-1",
+      time_dimension: "2024-12-10T00:00:00Z",
+      sum_totalTokens: 50000,
+      sum_calculatedTotalCost: 0.10,
+      avg_latency: 800
+    },
+    // ... 更多行
+  ]
+end note
+
+CH --> ExecQuery: 返回 DatabaseRow[]
+deactivate CH
+
+ExecQuery --> Widget: 返回查询结果
+deactivate ExecQuery
+
+== 数据转换阶段 ==
+
+Widget -> Widget: useMemo(() => transformData())
+
+note right of Widget
+  转换规则判断：
+  
+  if (chartType === "PIVOT_TABLE"):
+    保留所有原始字段
+  
+  else if (isTimeSeriesChart(chartType)):
+    转换为 TimeSeriesChartDataPoint[]
+  
+  else:
+    转换为 { dimension, metric }[]
+end note
+
+alt chartType === "LINE_TIME_SERIES" || "BAR_TIME_SERIES"
+
+  Widget -> Widget: 转换为时间序列格式
+
+  note right of Widget
+    转换逻辑（复杂示例）：
+    
+    // Step 1: 按时间戳分组
+    const groupedByTime = new Map();
+    
+    queryResult.data.forEach(item => {
+      const ts = new Date(item.time_dimension).getTime();
+      if (!groupedByTime.has(ts)) {
+        groupedByTime.set(ts, []);
+      }
+      groupedByTime.get(ts).push(item);
+    });
+    
+    // Step 2: 构建时间序列数据点
+    const transformed = Array.from(groupedByTime.entries()).map(
+      ([ts, items]) => ({
+        ts,
+        values: items.map(item => ({
+          label: `${item.model} - ${item.userId}`,  // 组合多维度
+          value: Number(item.sum_totalTokens)      // 选择指标
+        }))
+      })
+    );
+    
+    结果格式：
+    [
+      {
+        ts: 1702166400000,  // 2024-12-10
+        values: [
+          { label: "gpt-4 - user-1", value: 15000 },
+          { label: "gpt-4 - user-2", value: 20000 },
+          { label: "gpt-3.5-turbo - user-1", value: 50000 }
+        ]
+      },
+      {
+        ts: 1702252800000,  // 2024-12-11
+        values: [...]
+      }
+    ]
+  end note
+
+else chartType === "HORIZONTAL_BAR" || "VERTICAL_BAR" || "PIE"
+
+  Widget -> Widget: 转换为分类数据格式
+
+  note right of Widget
+    转换逻辑：
+    
+    queryResult.data.map(item => ({
+      dimension: item.model || item.userId || "n/a",
+      metric: Number(item.sum_totalTokens)
+    }))
+    
+    结果：
+    [
+      { dimension: "gpt-4", metric: 85000 },
+      { dimension: "gpt-3.5-turbo", metric: 150000 }
+    ]
+  end note
+
+else chartType === "PIVOT_TABLE"
+
+  Widget -> Widget: 保留原始数据
+
+  note right of Widget
+    Pivot Table 需要所有字段：
+    
+    queryResult.data.map(item => ({
+      ...item,  // 保留所有字段
+      dimension: dimensions[0]?.field ?? "dimension",
+      metric: 0  // placeholder
+    }))
+  end note
+
+else chartType === "NUMBER"
+
+  Widget -> Widget: 计算总计
+
+  note right of Widget
+    大数字卡片逻辑：
+    
+    const total = queryResult.data.reduce(
+      (acc, item) => acc + Number(item.sum_totalTokens),
+      0
+    );
+    
+    // 格式化
+    totalFormatted = compactNumberFormatter(total)
+    // 例：85,000 → "85K"
+  end note
+
+end
+
+== 图表渲染阶段 ==
+
+Widget -> Chart: 传递转换后的数据\n<BaseTimeSeriesChart data={transformed} />
+activate Chart
+
+Chart -> Chart: 处理数据准备
+
+note right of Chart
+  数据准备：
+  
+  1. 提取所有唯一的 labels（图例）
+     uniqueLabels = [...new Set(
+       data.flatMap(d => d.values.map(v => v.label))
+     )]
+  
+  2. 分配颜色
+     colors = getColorsForCategories(uniqueLabels)
+     // 使用预定义的调色板
+  
+  3. 格式化数据为 Recharts 格式
+     rechartsData = data.map(point => {
+       const obj = { ts: point.ts };
+       point.values.forEach(v => {
+         obj[v.label] = v.value;
+       });
+       return obj;
+     })
+     
+  示例输出：
+  [
+    {
+      ts: 1702166400000,
+      "gpt-4 - user-1": 15000,
+      "gpt-4 - user-2": 20000,
+      "gpt-3.5-turbo - user-1": 50000
+    },
+    // ...
+  ]
+end note
+
+Chart -> Tremor: 渲染 LineChart/AreaChart
+activate Tremor
+
+note right of Tremor
+  Tremor 配置：
+  
+  data: transformArray(data)
+  index: "timestamp"
+  categories: Array.from(labels)
+  colors: getColorsForCategories(labels)
+  
+  valueFormatter: compactNumberFormatter
+  yAxisWidth: 60
+  maxValue: dynamicMaxValue
+  
+  showLegend: true/false
+  showTooltip: true
+  connectNulls: true/false
+  
+  customTooltip: <Tooltip formatter={...} />
+end note
+
+Tremor -> Tremor: 1. 创建 SVG/Canvas
+
+Tremor -> Tremor: 2. 渲染 X 轴（时间）\n时间格式根据 agg 参数自动调整
+
+Tremor -> Tremor: 3. 渲染 Y 轴（指标）\n使用 compactNumberFormatter 格式化
+
+Tremor -> Tremor: 4. 渲染图例\nshowLegend=true 时显示在底部
+
+Tremor -> Tremor: 5. 渲染线条/区域\n根据 chartType (line/area) 选择组件
+
+Tremor -> Tremor: 6. 渲染 Tooltip\n使用自定义 Tooltip 组件
+
+Tremor --> Chart: 返回渲染的图表
+deactivate Tremor
+
+Chart --> Widget: 渲染完成
+deactivate Chart
+
+== 交互阶段 ==
+
+Widget -> Widget: 监听用户交互
+
+alt 用户悬停数据点
+
+  Widget -> Chart: onMouseMove 事件
+  activate Chart
+  
+  Chart -> Tremor: 更新 Tooltip 位置和内容
+  activate Tremor
+  
+  Tremor -> Tremor: 显示 Tooltip\n（时间 + 所有系列的值 + 格式化）
+  
+  Tremor --> Chart: Tooltip 显示
+  deactivate Tremor
+  
+  Chart --> Widget: 用户看到详细数据
+  deactivate Chart
+
+end
+
+alt 用户点击图例
+
+  Widget -> Chart: onClick 图例
+  activate Chart
+  
+  Chart -> Chart: 切换系列显示/隐藏\nsetHiddenSeries(prev => ...)
+  
+  Chart -> Recharts: 重新渲染（过滤数据）
+  activate Recharts
+  
+  note right of Recharts
+    过滤逻辑：
+    只渲染未隐藏的系列
+    
+    visibleLines = lines.filter(
+      line => !hiddenSeries.includes(line.dataKey)
+    )
+  end note
+  
+  Recharts --> Chart: 更新后的图表
+  deactivate Recharts
+  
+  Chart --> Widget: 图表更新
+  deactivate Chart
+
+end
+
+== 性能优化 ==
+
+Widget -> Widget: useMemo 缓存转换结果
+
+note right of Widget
+  缓存策略：
+  
+  const transformedData = useMemo(
+    () => transformData(queryResult.data, widget.data),
+    [queryResult.data, widget.data]
+  );
+  
+  只有在查询数据或 Widget 配置变化时
+  才重新计算，避免每次渲染都转换
+end note
+
+Chart -> Chart: React.memo 优化组件
+
+note right of Chart
+  组件优化：
+  
+  export const BaseTimeSeriesChart = React.memo(
+    (props) => { ... },
+    (prevProps, nextProps) => {
+      // 自定义比较逻辑
+      return isEqual(prevProps.data, nextProps.data);
+    }
+  );
+  
+  数据未变化时跳过渲染
+end note
+
+@enduml

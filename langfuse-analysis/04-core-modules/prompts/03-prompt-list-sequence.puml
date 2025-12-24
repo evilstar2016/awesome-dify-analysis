@@ -1,0 +1,180 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title Prompt 查询流程（UI）- 文件夹视图
+
+actor "用户" as User
+participant "Frontend\n(Prompts Page)" as Frontend
+participant "tRPC Client" as TRPCClient
+participant "tRPC Router\n(prompts)" as Router
+participant "Prisma ORM" as Prisma
+database "PostgreSQL" as PG
+participant "Metrics Service" as MetricsService
+database "ClickHouse" as CH
+
+== 用户访问 Prompts 列表 ==
+
+User -> Frontend: 访问 /project/[id]/prompts\n当前文件夹: "customer-service"
+activate Frontend
+
+Frontend -> TRPCClient: useInfiniteQuery(\n  prompts.all, {\n    projectId,\n    pathPrefix: "customer-service",\n    filter, orderBy,\n    page, limit\n  })
+activate TRPCClient
+
+TRPCClient -> Router: prompts.all()
+activate Router
+
+== 认证和权限 ==
+
+Router -> Router: 验证用户 session
+Router -> Router: 检查 prompts:read 权限
+
+note right of Router
+  protectedProjectProcedure
+  自动注入 session 和 projectId
+end note
+
+== 构建 SQL 查询 ==
+
+Router -> Router: 构建查询条件
+
+note right of Router
+  查询条件:
+  1. pathPrefix: "customer-service"
+     → WHERE name LIKE 'customer-service/%'
+     OR name = 'customer-service'
+  
+  2. filter: 按标签、创建者等过滤
+  
+  3. orderBy: 排序（name, version, createdAt）
+  
+  4. searchQuery: 全文搜索
+end note
+
+== 查询 Prompts（含文件夹） ==
+
+Router -> Prisma: $queryRaw(generatePromptQuery(...))
+activate Prisma
+
+Prisma -> PG: WITH folders AS (\n  -- 提取下一级文件夹\n  SELECT DISTINCT\n    split_part(\n      substring(name FROM length('customer-service/') + 1),\n      '/', 1\n    ) as segment,\n    'folder' as row_type,\n    NULL as version,\n    NULL as labels,\n    MAX(updated_at) as updated_at\n  FROM prompts\n  WHERE project_id = ?\n    AND name LIKE 'customer-service/%'\n    AND name != 'customer-service'\n  GROUP BY segment\n),\nprompts_direct AS (\n  -- 当前文件夹下的直接 prompts\n  SELECT\n    name,\n    'prompt' as row_type,\n    version,\n    labels,\n    updated_at\n  FROM prompts\n  WHERE project_id = ?\n    AND name NOT LIKE 'customer-service/%/%'\n    AND (name LIKE 'customer-service/%'\n         OR name = 'customer-service')\n)\nSELECT * FROM folders\nUNION ALL\nSELECT * FROM prompts_direct\nORDER BY row_type DESC, name
+activate PG
+
+note right of PG
+  查询策略:
+  1. 分离文件夹和 prompts
+  2. 文件夹只显示下一级
+  3. Prompts 显示当前层级
+  4. 按类型和名称排序
+end note
+
+PG --> Prisma: mixed results:\n[\n  { name: "greeting", row_type: "folder" },\n  { name: "customer-service/support", row_type: "prompt", version: 3 },\n  { name: "customer-service/escalation", row_type: "prompt", version: 2 }\n]
+deactivate PG
+
+Prisma --> Router: prompts and folders
+deactivate Prisma
+
+== 统计总数 ==
+
+Router -> Prisma: $queryRaw(count query)
+activate Prisma
+
+Prisma -> PG: SELECT count(*) AS "totalCount"\nFROM (\n  -- 同样的查询逻辑\n) AS subquery
+activate PG
+PG --> Prisma: totalCount = 15
+deactivate PG
+
+Prisma --> Router: { totalCount: 15 }
+deactivate Prisma
+
+== 获取使用统计（可选） ==
+
+alt 需要显示使用统计
+  
+  Router -> Router: 提取所有 prompt names
+  
+  Router -> MetricsService: getObservationsWithPromptName(\n  projectId,\n  promptNames\n)
+  activate MetricsService
+  
+  MetricsService -> CH: SELECT\n  prompt_name,\n  count(*) as count\nFROM observations\nWHERE project_id = ?\n  AND prompt_name IN (?)\nGROUP BY prompt_name
+  activate CH
+  
+  note right of CH
+    统计使用该 prompt 的
+    observations 数量
+  end note
+  
+  CH --> MetricsService: [\n  { promptName: "support", count: 1250 },\n  { promptName: "escalation", count: 89 }\n]
+  deactivate CH
+  
+  MetricsService --> Router: usage metrics
+  deactivate MetricsService
+  
+  Router -> Router: 合并 metrics 到 prompts
+
+end
+
+== 返回结果 ==
+
+Router --> TRPCClient: {\n  prompts: [\n    {\n      name: "greeting",\n      row_type: "folder",\n      itemCount: 5\n    },\n    {\n      name: "customer-service/support",\n      row_type: "prompt",\n      version: 3,\n      labels: ["production", "latest"],\n      observationCount: 1250\n    },\n    {\n      name: "customer-service/escalation",\n      row_type: "prompt",\n      version: 2,\n      labels: ["staging"],\n      observationCount: 89\n    }\n  ],\n  totalCount: 15\n}
+deactivate Router
+
+TRPCClient --> Frontend: prompts data
+deactivate TRPCClient
+
+== 前端渲染 ==
+
+Frontend -> Frontend: 渲染表格/列表
+
+note right of Frontend
+  显示内容:
+  
+  文件夹图标 📁 greeting/ (5 items)
+  
+  📄 support
+     Version: 3
+     Labels: production, latest
+     Usage: 1,250 observations
+  
+  📄 escalation
+     Version: 2
+     Labels: staging
+     Usage: 89 observations
+end note
+
+Frontend --> User: 显示 Prompts 列表
+deactivate Frontend
+
+== 用户交互 ==
+
+alt 用户点击文件夹
+  User -> Frontend: 点击 "greeting" 文件夹
+  activate Frontend
+  Frontend -> Frontend: 更新 pathPrefix\n= "customer-service/greeting"
+  Frontend -> TRPCClient: refetch with new pathPrefix
+  note right of Frontend
+    递归进入子文件夹
+  end note
+  deactivate Frontend
+  
+else 用户点击 prompt
+  User -> Frontend: 点击 "support" prompt
+  activate Frontend
+  Frontend -> Frontend: navigate to\n/prompts/customer-service/support
+  note right of Frontend
+    进入 prompt 详情页
+    显示所有版本
+  end note
+  deactivate Frontend
+end
+
+@enduml

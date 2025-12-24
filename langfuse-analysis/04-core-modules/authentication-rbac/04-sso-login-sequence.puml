@@ -1,0 +1,225 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title 企业 SSO 单点登录流程
+
+actor 用户
+participant "登录页面" as LoginPage
+participant "NextAuth" as NextAuth
+participant "SSO Provider\n(Azure AD/Okta/etc)" as SSO
+participant "Multi-Tenant SSO\nUtils (EE)" as SSOUtils
+database "Prisma/DB" as DB
+participant "Auth Callbacks" as Callbacks
+
+== SSO 提供商发现（多租户） ==
+用户 -> LoginPage: 输入企业邮箱\n(user@company.com)
+activate LoginPage
+
+LoginPage -> SSOUtils: getSsoAuthProviderIdForDomain(\n  "company.com")
+activate SSOUtils
+
+SSOUtils -> DB: 查询域名 SSO 配置\nfindFirst({domain: "company.com"})
+activate DB
+DB --> SSOUtils: {providerId, domain, orgId}
+deactivate DB
+
+alt 找到企业 SSO 配置
+  SSOUtils --> LoginPage: "azure-ad-tenant-xxx"
+  deactivate SSOUtils
+  
+  LoginPage -> LoginPage: 显示 SSO 登录按钮\n"使用企业账号登录"
+  LoginPage --> 用户: SSO 登录界面
+  deactivate LoginPage
+else 未配置 SSO
+  SSOUtils --> LoginPage: null
+  deactivate SSOUtils
+  LoginPage --> 用户: 显示标准登录选项
+  deactivate LoginPage
+end
+
+== SSO 认证流程 ==
+用户 -> LoginPage: 点击 SSO 登录按钮
+activate LoginPage
+
+LoginPage -> NextAuth: GET /api/auth/signin/[provider]\n?providerId=azure-ad-tenant-xxx
+activate NextAuth
+
+NextAuth -> NextAuth: 加载 SSO Provider 配置\n- clientId\n- clientSecret\n- issuer/tenant\n- authorization endpoint\n- token endpoint
+
+NextAuth -> NextAuth: 生成 OAuth 参数\n- state (CSRF token)\n- nonce (replay protection)\n- redirect_uri\n- code_challenge (PKCE)
+
+note right of NextAuth
+  OAuth/OIDC 参数：
+  - response_type: code
+  - scope: openid email profile
+  - state: random-token
+  - nonce: random-nonce
+end note
+
+NextAuth --> LoginPage: 302 Redirect to SSO Provider\nLocation: https://login.microsoftonline.com/\n  {tenant}/oauth2/v2.0/authorize?...
+deactivate NextAuth
+
+LoginPage --> 用户: 重定向到 SSO 登录页面
+deactivate LoginPage
+
+== 用户在 SSO 提供商认证 ==
+用户 -> SSO: 输入企业凭证\n(用户名/密码/MFA)
+activate SSO
+
+SSO -> SSO: 验证用户身份\n- 用户名密码\n- 多因素认证\n- 条件访问策略
+
+alt 认证成功
+  SSO --> 用户: 302 Redirect to Callback URL\n/api/auth/callback/[provider]?\n  code=xxx&state=xxx
+  deactivate SSO
+else 认证失败
+  SSO --> 用户: 显示错误信息
+  deactivate SSO
+end
+
+== 处理 SSO 回调 ==
+用户 -> NextAuth: GET /api/auth/callback/[provider]\n?code=xxx&state=xxx
+activate NextAuth
+
+NextAuth -> NextAuth: 验证 state 参数\n(CSRF 保护)
+
+NextAuth -> SSO: POST /token\nExchange authorization code
+activate SSO
+
+note right of NextAuth
+  Token Request:
+  - grant_type: authorization_code
+  - code: xxx
+  - redirect_uri: callback-url
+  - client_id: xxx
+  - client_secret: xxx
+  - code_verifier (PKCE)
+end note
+
+SSO -> SSO: 验证授权码和客户端
+
+SSO --> NextAuth: Token Response\n{\n  access_token,\n  id_token (JWT),\n  refresh_token,\n  expires_in\n}
+deactivate SSO
+
+NextAuth -> NextAuth: 验证 id_token\n- 签名验证\n- issuer 验证\n- audience 验证\n- nonce 验证\n- 过期时间检查
+
+NextAuth -> SSO: GET /userinfo\nAuthorization: Bearer {access_token}
+activate SSO
+SSO --> NextAuth: User Profile\n{\n  sub: "user-id",\n  email: "user@company.com",\n  name: "User Name",\n  picture: "avatar-url"\n}
+deactivate SSO
+
+== 用户账号关联和授权 ==
+NextAuth -> Callbacks: signIn callback\n{user, account, profile}
+activate Callbacks
+
+Callbacks -> SSOUtils: findMultiTenantSsoConfig(\n  domain: "company.com")
+activate SSOUtils
+SSOUtils -> DB: 查询 SSO 配置和组织
+activate DB
+DB --> SSOUtils: {orgId, domain, ...}
+deactivate DB
+SSOUtils --> Callbacks: SSO 配置
+deactivate SSOUtils
+
+Callbacks -> DB: 查找或创建用户\nfindOrCreate({\n  email: "user@company.com"\n})
+activate DB
+
+alt 用户首次登录
+  DB -> DB: 创建新用户记录
+  DB --> Callbacks: 新用户
+  deactivate DB
+  
+  Callbacks -> DB: 创建账号关联\nAccount.create({\n  userId,\n  provider: "azure-ad",\n  providerAccountId\n})
+  activate DB
+  deactivate DB
+  
+  Callbacks -> DB: 添加到组织\nOrganizationMembership.create({\n  userId,\n  orgId: from SSO config,\n  role: "MEMBER" (default)\n})
+  activate DB
+  deactivate DB
+  
+  note right of Callbacks
+    SSO 首次登录策略：
+    - 自动加入配置的组织
+    - 默认角色：MEMBER
+    - 可通过配置自定义
+  end note
+else 用户已存在
+  DB --> Callbacks: 现有用户
+  deactivate DB
+  
+  Callbacks -> Callbacks: 更新账号链接\n(如果配置允许)
+end
+
+Callbacks -> Callbacks: 构建 Session\n包含组织和项目信息
+
+Callbacks --> NextAuth: allow = true
+deactivate Callbacks
+
+NextAuth -> NextAuth: jwt callback\n添加用户信息到 JWT
+
+NextAuth -> NextAuth: session callback\n构建完整 Session
+
+NextAuth -> NextAuth: 设置 Session Cookie
+
+NextAuth --> 用户: 302 Redirect to Dashboard\n+ Set-Cookie: session-token
+deactivate NextAuth
+
+用户 -> "Dashboard" as Dashboard: 访问仪表板
+activate Dashboard
+
+Dashboard -> Dashboard: 读取 Session Cookie\n验证用户身份
+
+Dashboard --> 用户: 显示用户界面\n（已登录状态）
+deactivate Dashboard
+
+note over 用户, DB
+  **SSO 安全特性：**
+  
+  1. **CSRF 保护**：state 参数验证
+  2. **重放攻击防护**：nonce 验证
+  3. **PKCE**：防止授权码拦截
+  4. **Token 验证**：JWT 签名和声明验证
+  5. **多因素认证**：由 SSO 提供商强制执行
+  
+  **多租户 SSO 配置：**
+  - 每个域名对应一个组织
+  - 域名强制 SSO：禁用密码登录
+  - 自动成员加入：首次登录自动加入组织
+  - 角色映射：可从 SAML/OIDC 声明映射角色
+end note
+
+== 域名强制 SSO ==
+用户 -> LoginPage: 尝试密码登录\n(user@company.com)
+activate LoginPage
+
+LoginPage -> NextAuth: POST /api/auth/signin\n{email, password}
+activate NextAuth
+
+NextAuth -> SSOUtils: getSsoAuthProviderIdForDomain(\n  "company.com")
+activate SSOUtils
+SSOUtils -> DB: 查询域名 SSO 配置
+activate DB
+DB --> SSOUtils: {providerId, enforced: true}
+deactivate DB
+SSOUtils --> NextAuth: providerId 存在
+deactivate SSOUtils
+
+NextAuth -> NextAuth: throw Error(\n  ENTERPRISE_SSO_REQUIRED_MESSAGE)
+
+NextAuth --> LoginPage: 错误：必须使用 SSO 登录
+deactivate NextAuth
+
+LoginPage --> 用户: "此域名要求使用企业 SSO 登录"
+deactivate LoginPage
+
+@enduml
