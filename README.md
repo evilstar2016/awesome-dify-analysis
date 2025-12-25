@@ -20,6 +20,27 @@
 
 ## 📚 已分析项目
 
+### [Dify](./dify-analysis)
+
+Dify 是一个开源的 LLM 应用开发平台，提供从 Prompt 编排到 AI 工作流的完整开发工具链。
+
+**分析内容：**
+- ✅ 项目概览与架构设计
+- ✅ API 层设计与实现
+- ✅ 核心模块（智能体、知识库、工作流、权限管理、提示词、模型运行时）
+- ✅ 知识库文档处理（PDF、Word、Excel、Notion 等）
+- ✅ 数据架构设计
+- ✅ 第三方集成（LLM、向量数据库、对象存储等）
+
+**技术栈：**
+- Backend: Python, Flask, Celery
+- Frontend: Next.js, React, TypeScript
+- Infrastructure: PostgreSQL, Redis, Qdrant/Weaviate, S3
+
+[查看详细分析 →](./dify-analysis)
+
+---
+
 ### [Langfuse](./langfuse-analysis)
 
 Langfuse 是一个开源的 LLM 工程平台，用于跟踪、监控和调试 AI 应用。
@@ -87,7 +108,6 @@ project-name-analysis/
 一些候选项目：
 - [ ] LangChain - AI 应用开发框架
 - [ ] LlamaIndex - 数据增强的 LLM 应用框架
-- [ ] Dify - LLM 应用开发平台
 - [ ] Flowise - 低代码 LLM 应用构建工具
 - [ ] AutoGPT - 自主 AI 代理
 - [ ] GPT-Engineer - AI 辅助编程工具
