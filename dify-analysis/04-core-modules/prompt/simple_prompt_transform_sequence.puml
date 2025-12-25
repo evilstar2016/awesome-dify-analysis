@@ -1,0 +1,129 @@
+@startuml SimplePromptTransform_Sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding      6
+skinparam ParticipantPadding    30
+
+title SimplePromptTransform 核心流程时序图
+
+actor "Application" as App
+participant "BaseAppRunner" as Runner
+participant "SimplePromptTransform" as Simple
+participant "PromptTemplateParser" as Parser
+participant "TokenBufferMemory" as Memory
+participant "ModelInstance" as Model
+
+== 1. 初始化阶段 ==
+
+App -> Runner: organize_prompt_messages()
+activate Runner
+
+Runner -> Runner: 判断 prompt_type
+note right: SIMPLE 或 ADVANCED
+
+alt prompt_type == SIMPLE
+    Runner -> Simple: new SimplePromptTransform()
+    activate Simple
+    
+    Runner -> Simple: get_prompt(app_mode, prompt_template_entity, inputs, query, files, context, memory, model_config)
+    
+    == 2. 模式判断 ==
+    
+    Simple -> Simple: 获取 model_mode (CHAT/COMPLETION)
+    
+    alt model_mode == CHAT
+        Simple -> Simple: _get_chat_model_prompt_messages()
+    else model_mode == COMPLETION
+        Simple -> Simple: _get_completion_model_prompt_messages()
+    end
+    
+    == 3. 加载 Prompt 规则 ==
+    
+    Simple -> Simple: _get_prompt_rule(app_mode, provider, model)
+    Simple -> Simple: 加载 JSON 模板文件
+    note right
+        common_chat.json 或
+        common_completion.json 或
+        baichuan_chat.json 等
+    end note
+    
+    == 4. 构建 Prompt 模板 ==
+    
+    Simple -> Simple: get_prompt_template()
+    
+    Simple -> Parser: new PromptTemplateParser(template)
+    activate Parser
+    Parser -> Parser: extract() 提取变量
+    Parser --> Simple: parser 实例
+    deactivate Parser
+    
+    == 5. 变量替换 ==
+    
+    Simple -> Simple: _get_prompt_str_and_rules()
+    
+    Simple -> Parser: format(variables)
+    activate Parser
+    note right
+        替换变量:
+        - 用户输入变量
+        - #context#
+        - #query#
+        - #histories#
+    end note
+    Parser --> Simple: formatted_prompt
+    deactivate Parser
+    
+    == 6. 构建消息列表 ==
+    
+    Simple -> Simple: 创建 SystemPromptMessage(prompt)
+    
+    alt 有 Memory
+        == 7. 追加历史消息 ==
+        
+        Simple -> Simple: _append_chat_histories()
+        
+        Simple -> Simple: _calculate_rest_token()
+        Simple -> Model: get_llm_num_tokens(prompt_messages)
+        activate Model
+        Model --> Simple: current_tokens
+        deactivate Model
+        
+        Simple -> Simple: rest_tokens = context_size - max_tokens - current_tokens
+        
+        Simple -> Memory: get_history_prompt_messages(max_token_limit, message_limit)
+        activate Memory
+        Memory -> Memory: extract_thread_messages()
+        Memory --> Simple: history_messages
+        deactivate Memory
+        
+        Simple -> Simple: prompt_messages.extend(histories)
+    end
+    
+    == 8. 添加用户消息 ==
+    
+    Simple -> Simple: _get_last_user_message(query, files)
+    
+    alt 有文件
+        Simple -> Simple: 构建 PromptMessageContents
+        Simple -> Simple: UserPromptMessage(content=contents)
+    else 无文件
+        Simple -> Simple: UserPromptMessage(content=query)
+    end
+    
+    Simple --> Runner: (prompt_messages, stops)
+    deactivate Simple
+    
+end
+
+Runner --> App: (prompt_messages, stops)
+deactivate Runner
+
+@enduml
