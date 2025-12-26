@@ -1,0 +1,222 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title Agent 多步推理流程 (Multi-Step Reasoning)
+
+actor 用户
+participant "Agent\nReAct" as Agent
+participant "LLM\n大语言模型" as LLM
+participant "检索工具\nRetrieval" as Retrieval
+participant "搜索工具\nDuckDuckGo" as Search
+participant "代码执行\nCodeExec" as Code
+participant "记忆管理\nMemory" as Memory
+
+用户 -> Agent: 复杂问题\n"分析 RAGFlow 项目的 GitHub Stars 趋势，\n并预测未来一个月的增长"
+activate Agent
+
+Agent -> Memory: 加载对话历史\nhistory = load_history(user_id)
+activate Memory
+Memory --> Agent: 返回历史\n[{role, content}, ...]
+deactivate Memory
+
+== 第1轮：问题分解 ==
+
+Agent -> LLM: 任务分析 (analyze_task_async)\ntask_desc = await analyze_task_async(\n  chat_mdl,\n  prompt,\n  user_request,\n  tool_metas,\n  user_defined_prompt\n)
+activate LLM
+LLM --> Agent: 返回任务描述
+deactivate LLM
+
+Agent -> LLM: 下一步决策 (next_step_async)\nresponse, tokens = await next_step_async(\n  chat_mdl,\n  hist,\n  tool_metas,\n  task_desc,\n  user_defined_prompt\n)
+activate LLM
+
+LLM -> LLM: 调用 next_step_async\n分析任务描述和工具元数据\n决定下一步行动
+
+LLM -> LLM: 返回 JSON 格式决策\nresponse = [\n  {\n    "name": "github_get_repo_info",\n    "arguments": {"repo": "infiniflow/ragflow"}\n  }\n]
+
+LLM --> Agent: 返回工具调用列表\n[\n  {\n    "name": "github_get_repo_info",\n    "arguments": {"repo": "infiniflow/ragflow"}\n  }\n]
+deactivate LLM
+
+== 第2轮：工具调用 (use_tool_async) ==
+
+Agent -> Agent: 解析 LLM 返回的 JSON\nfunctions = json_repair.loads(response)\n# [{"name": "github_get_repo_info", "arguments": {...}}]
+
+Agent -> Agent: 创建异步任务\ntool_tasks = []\nfor func in functions:\n  name = func["name"]\n  args = func["arguments"]\n  tool_tasks.append(\n    asyncio.create_task(use_tool_async(name, args))\n  )
+
+Agent -> Search: toolcall_session.tool_call_async(\n  name="github_get_repo_info",\n  args={"repo": "infiniflow/ragflow"}\n)
+activate Search
+
+Search -> Search: 调用 GitHub API\nresponse = requests.get(\n  "https://api.github.com/repos/infiniflow/ragflow"\n)
+
+Search --> Agent: 返回工具结果\ntool_response = {\n  "name": "ragflow",\n  "stars": 15234,\n  "forks": 1523,\n  "watchers": 892,\n  "created_at": "2024-01-15",\n  "updated_at": "2024-12-19"\n}
+deactivate Search
+
+Agent -> Agent: 等待所有工具完成\nresults = await asyncio.gather(*tool_tasks)
+
+Agent -> Agent: 保存工具使用记录\nuse_tools.append({\n  "name": "github_get_repo_info",\n  "arguments": {"repo": "infiniflow/ragflow"},\n  "results": tool_response\n})
+
+Agent -> LLM: 反思工具结果 (reflect_async)\nreflection = await reflect_async(\n  chat_mdl,\n  hist,\n  results,\n  user_defined_prompt\n)
+activate LLM
+LLM --> Agent: 返回反思内容\n"Based on the tool results, RAGFlow has 15234 stars..."
+deactivate LLM
+
+Agent -> Agent: 将反思添加到历史\nappend_user_content(hist, reflection)
+activate LLM
+
+LLM -> LLM: 分析观察结果\nThought: "当前有 15234 个 stars，\n需要获取历史数据来分析趋势"
+
+LLM -> LLM: 决策下一步\nAction: duckduckgo_search\nAction Input: {\n  "query": "RAGFlow GitHub stars history trend"\n}
+
+LLM --> Agent: 返回决策
+deactivate LLM
+
+== 第3轮：搜索历史数据 ==
+
+Agent -> Search: duckduckgo_search(\n  query="RAGFlow GitHub stars history"\n)
+activate Search
+
+Search -> Search: 网络搜索\nresults = duckduckgo.search(query)
+
+Search --> Agent: 搜索结果\n[\n  {\n    "title": "RAGFlow trending on GitHub",\n    "snippet": "Stars: 5000 (3个月前),\n      10000 (1个月前), 15234 (现在)",\n    "url": "https://..."\n  }\n]
+deactivate Search
+
+Agent -> Memory: 保存搜索结果
+activate Memory
+Memory --> Agent: 保存成功
+deactivate Memory
+
+Agent -> LLM: 继续推理
+activate LLM
+生成工具调用 JSON\nresponse = [\n  {\n    "name": "code_executor",\n    "arguments": {\n      "language": "python",\n      "code": "import numpy as np\\nfrom sklearn.linear_model import LinearRegression\\n\\nX = np.array([[0], [60], [90]]).reshape(-1, 1)\\ny = np.array([5000, 10000, 15234])\\n\\nmodel = LinearRegression()\\nmodel.fit(X, y)\\n\\nfuture_days = 120\\npredicted_stars = model.predict([[future_days]])[0]\\n\\nprint(f'预测: {int(predicted_stars)} stars')"\n    }\n  }\n]
+LLM -> LLM: 分析趋势\nThought: "数据显示：\n- 3个月前: 5000 stars\n- 1个月前: 10000 stars\n- 现在: 15234 stars\n增长趋势明显，需要建立预测模型"
+
+LLM -> LLM: 决策使用代码工具\nAction: code_executor\nAction Input: {\n  "language": "python",\n  "code": "\nimport numpy as np\nfrom sklearn.linear_model import LinearRegression\n\n# 历史数据 (天数, stars)\nX = np.array([[0], [60], [90]]).reshape(-1, 1)\ny = np.array([5000, 10000, 15234])\n\n# 训练模型\nmodel = LinearRegression()\nmodel.fit(X, y)\n\n# 预测未来30天\nfuture_days = 120  # 90 + 30\npredicted_stars = model.predict([[future_days]])[0]\n\nprint(f'预测30天后: {int(predicted_stars)} stars')\nprint(f'预计增长: {int(predicted_stars - 15234)} stars')\n"\n}
+
+LLM --> Agent: 返回决策
+deactivate LLM
+
+== 第4轮：执行预测代码 ==
+
+Agent -> Code: execute_code(\n  language="python",\n  code=prediction_code\n)
+activate Code
+
+Code -> Code: 沙箱执行\n# 在隔离环境中运行代码\nresult = exec_in_sandbox(code)
+
+Code --> Agent: 返回执行结果\n{\n  "status": "success",\n  "output": "\n    预测30天后: 20468 stars\n    预计增长: 5234 stars\n  ",\n  "execution_time": 0.5\n}
+deactivate Code
+
+Agent -> Memory: 保存计算结果
+activate Memory
+Memory --> Agent: 保存成功
+deactivate Memory
+
+Agent -> Agent: 检测到完成信号\nfor func in functions:\n  if func["name"] == "COMPLETE_TASK":\n    # 准备最终回答\n    append_user_content(\n      hist,\n      "Respond with a formal answer. "\n      "FORGET(DO NOT mention) about COMPLETE_TASK."\n    )
+
+Agent -> LLM: 生成最终答案 (complete)\nasync for txt, tkcnt in complete():\n  yield txt, tkcnt
+activate LLM
+
+LLM -> LLM: 流式生成综合分析\n整合所有工具结果\n生成结构化答案
+
+LLM --> Agent: 流式返回最终答案\n"基于对 RAGFlow GitHub 项目的分析：\n\n**当前状态：**\n- Stars: 15,234\n- 创建时间: 2024-01-15\n...\n\n**预测结果：**\n根据线性回归模型预测，未来30天：\n- 预计 Stars 数: 20,468\n- 预计增长: 5,234 stars\n...\n"
+deactivate LLM
+
+== 完成推理 ==
+
+Agent -> Memory: 保存完整推理过程\nsave_reasoning_trace({\n  "question": question,\n  "steps": [\n    {"thought": "...", "action": "...", "observation": "..."},\n    ...\n  ],\n  "final_answer": final_answer,\n  "iterations": 4\n})
+activate Memory
+Memory --> Agent: 保存成功
+deactivate Memory
+
+Agent --> 用户: 返回结果\n{\n  "answer": final_answer,\n  "reasoning_steps": 4,\n  "tools_used": [\n    "github_get_repo_info",\n    "duckduckgo_search",\n    "code_executor"\n  ],\n  "execution_time": 8.5\n}
+deactivate Agent
+
+note right of Agent
+  ReAct 框架：
+  
+  循环执行：
+  1. Thought (思考)
+     - 分析当前状态
+     - 规划下一步
+  
+  2. Action (行动)
+     - 选择合适工具
+     - 准备参数
+  
+  3. Observation (观察)
+     - 接收工具结果
+     - 更新知识状态
+  
+  直到得到 Final Answer
+end note
+
+note right of LLM
+  多步推理策略：
+  
+  1. 问题分解
+     - 识别子任务
+     - 确定依赖关系
+  
+  2. 顺序执行
+     - 按依赖顺序
+     - 传递上下文
+  
+  3. 结果聚合
+     - 综合所有信息
+     - 生成最终答案
+  
+  4. 错误处理
+     - 工具调用失败重试
+     - 调整推理策略
+end note
+
+note left of Memory
+  记忆管理：
+  
+  短期记忆：
+  - 当前会话历史
+  - 工具调用结果
+  - 中间推理步骤
+  
+  长期记忆：
+  - 用户偏好
+  - 历史交互
+  - 领域知识
+  
+  检索策略：
+  - 相关性排序
+  - 时间衰减
+  - 重要性权重
+end note
+
+note right of Code
+  代码执行安全：
+  
+  1. 沙箱隔离
+     - Docker 容器
+     - 资源限制
+  
+  2. 超时控制
+     - 最大执行时间
+     - CPU/内存限制
+  
+  3. 危险操作拦截
+     - 禁止网络访问
+     - 禁止文件系统写入
+     - 禁止导入危险模块
+  
+  4. 输出过滤
+     - 移除敏感信息
+     - 限制输出长度
+end note
+
+@enduml

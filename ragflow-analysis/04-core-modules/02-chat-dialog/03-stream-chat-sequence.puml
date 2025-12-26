@@ -1,0 +1,176 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title 流式对话流程 (Stream Chat with SSE)
+
+actor 用户
+participant "前端界面\nReact" as Frontend
+participant "API 服务\ndialog_app.py" as API
+participant "RAG 引擎\nRAGChat" as RAG
+participant "检索器\nRetrieval" as Retrieval
+participant "LLM 服务\nChatModel" as LLM
+participant "消息服务\nConversation" as ConvSvc
+database "MySQL" as DB
+
+用户 -> Frontend: 输入问题\n"介绍一下 RAG 技术原理"
+activate Frontend
+
+Frontend -> Frontend: 创建 EventSource\nconst eventSource = new EventSource(\n  `/api/v1/conversation/completion`\n)
+
+Frontend -> API: POST /api/v1/conversation/completion\nContent-Type: application/json\n{\n  "conversation_id": "conv_uuid",\n  "messages": [{"role": "user", "content": "介绍一下 RAG 技术原理"}],\n  "stream": true\n}
+activate API
+
+== 1. 初始化流式响应 ==
+
+API -> API: 设置 SSE Headers\nContent-Type: text/event-stream\nCache-Control: no-cache\nConnection: keep-alive
+
+== 2. 检索阶段 ==
+
+API -> RAG: chat_stream(\n  question=question,\n  dialog_config=config\n)
+activate RAG
+
+RAG -> Retrieval: retrieve(query, kb_ids, top_k)
+activate Retrieval
+
+Retrieval -> Retrieval: 向量检索 + 全文检索 + 重排序\n(同同步流程)
+
+Retrieval --> RAG: 返回 TopN 分块
+deactivate Retrieval
+
+== 3. 流式生成 ==
+
+RAG -> RAG: 构建提示词\nprompt = build_prompt(question, chunks, history)
+
+RAG -> LLM: chat_stream(\n  messages=[...],\n  stream=True\n)
+activate LLM
+
+LLM -> LLM: 调用 OpenAI Stream API\nopenai.ChatCompletion.create(\n  ...,\n  stream=True\n)
+
+loop 流式输出每个 Token
+    LLM --> RAG: yield chunk\n{"delta": {"content": "RAG "}}
+    
+    RAG -> RAG: 累积答案片段\nfull_answer += chunk.content
+    
+    RAG --> API: yield {\n  "answer": "RAG ",\n  "reference": chunks,\n  "doc_aggs": doc_aggs\n}
+    
+    API -> API: 格式化 SSE 消息\nevent_data = f"data: {json.dumps(data)}\\n\\n"
+    
+    API --> Frontend: SSE Push\ndata: {"answer": "RAG ", "reference": [...]}\n\n
+    
+    Frontend -> Frontend: 更新界面\nanswerText += chunk.answer
+    
+    Frontend --> 用户: 实时显示\n"RAG "
+end
+
+note over LLM, Frontend
+  流式输出示例：
+  data: {"answer": "RAG ", "reference": [...]}
+  
+  data: {"answer": "(Retrieval-Augmented ", "reference": [...]}
+  
+  data: {"answer": "Generation) ", "reference": [...]}
+  
+  data: {"answer": "是一种结合", "reference": [...]}
+  
+  data: {"answer": "检索与生成的", "reference": [...]}
+  
+  data: {"answer": "AI 技术...", "reference": [...]}
+end note
+
+LLM -> LLM: 生成完成
+
+LLM --> RAG: 流结束标记\n{"finish_reason": "stop"}
+deactivate LLM
+
+RAG -> RAG: 标注引用\nfinal_answer = add_citations(full_answer, chunks)
+
+RAG --> API: yield final result\n{\n  "answer": "[完整答案]",\n  "reference": [...],\n  "doc_aggs": [...],\n  "done": true\n}
+
+API --> Frontend: SSE Push\ndata: {"answer": "[完整答案]", "done": true}\n\ndata: [DONE]\n\n
+
+deactivate API
+
+Frontend -> Frontend: 关闭 EventSource\neventSource.close()
+
+Frontend -> Frontend: 显示完成状态\n- 答案完整显示\n- 显示引用卡片\n- 启用输入框
+
+== 4. 保存消息 (异步) ==
+
+RAG -> ConvSvc: save_conversation(\n  dialog_id,\n  question,\n  full_answer,\n  reference,\n  doc_aggs\n)
+activate ConvSvc
+
+ConvSvc -> DB: INSERT INTO conversation\n(user message + assistant message)
+activate DB
+DB --> ConvSvc: 保存成功
+deactivate DB
+
+ConvSvc --> RAG: 保存完成
+deactivate ConvSvc
+
+deactivate RAG
+
+Frontend --> 用户: 显示完整答案\n+ 引用来源
+deactivate Frontend
+
+note right of API
+  SSE 消息格式：
+  
+  1. 数据消息
+     data: {"answer": "...", "reference": [...]}
+     
+  2. 结束标记
+     data: [DONE]
+  
+  3. 错误消息
+     data: {"error": "..."}
+  
+  特点：
+  - 单向推送（服务器→客户端）
+  - 自动重连
+  - 基于 HTTP
+end note
+
+note right of Frontend
+  EventSource 处理：
+  
+  eventSource.onmessage = (e) => {
+    const data = JSON.parse(e.data)
+    if (data === '[DONE]') {
+      eventSource.close()
+      return
+    }
+    setAnswer(prev => prev + data.answer)
+  }
+  
+  eventSource.onerror = (e) => {
+    console.error('SSE error:', e)
+    eventSource.close()
+  }
+end note
+
+note left of LLM
+  流式生成优势：
+  1. 降低首字延迟 (TTFT)
+     - 同步: 5-10 秒
+     - 流式: 0.5-1 秒
+  
+  2. 更好的用户体验
+     - 实时反馈
+     - 类似打字效果
+  
+  3. 减少超时风险
+     - 长答案不会超时
+end note
+
+@enduml

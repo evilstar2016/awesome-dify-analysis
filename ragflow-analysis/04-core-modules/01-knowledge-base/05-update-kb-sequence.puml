@@ -1,0 +1,73 @@
+@startuml 知识库更新流程
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+actor "用户" as User
+participant "kb_app.update" as API
+participant "KnowledgebaseService" as Service
+database "MySQL" as DB
+participant "Elasticsearch" as ES
+
+User -> API: POST /api/v1/kb/update
+activate API
+
+API -> API: 验证参数
+note right of API
+  kb_id, name, 
+  description
+end note
+
+API -> Service: accessible4deletion()
+activate Service
+Service -> DB: 查询权限
+DB --> Service: 权限数据
+Service --> API: 权限验证结果
+deactivate Service
+
+alt 无权限
+    API --> User: 403 No authorization
+end
+
+API -> Service: get_by_id(kb_id)
+activate Service
+Service -> DB: SELECT
+DB --> Service: KB 数据
+Service --> API: KB 数据
+deactivate Service
+
+API -> API: 检查名称重复
+
+API -> DB: update_by_id(kb_id, req)
+activate DB
+DB --> API: 更新成功
+deactivate DB
+
+alt PageRank 配置变化
+    API -> ES: 更新 PageRank 字段
+    activate ES
+    ES --> API: 更新成功
+    deactivate ES
+end
+
+API -> Service: link_connectors()
+activate Service
+note right of Service
+  关联数据源连接器
+end note
+Service --> API: 关联完成
+deactivate Service
+
+API --> User: 200 OK {kb_data}
+deactivate API
+
+@enduml

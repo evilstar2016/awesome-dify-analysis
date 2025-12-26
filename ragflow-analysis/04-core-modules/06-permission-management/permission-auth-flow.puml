@@ -1,0 +1,122 @@
+@startuml permission-auth-flow
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title RAGFlow 用户认证流程时序图
+
+actor "用户" as User
+participant "前端\n(React)" as Frontend
+participant "API服务器\n(Quart)" as API
+participant "UserService" as UserSvc
+participant "数据库\n(MySQL)" as DB
+participant "会话管理\n(Quart-Auth)" as Session
+
+== 用户登录 ==
+User -> Frontend: 输入邮箱和密码
+activate Frontend
+
+Frontend -> Frontend: 使用公钥加密密码
+Frontend -> API: POST /v1/user/login\n{email, encrypted_password}
+activate API
+
+API -> API: 使用私钥解密密码
+note right: crypto_utils.decrypt()
+
+API -> UserSvc: query_user(email, password)
+activate UserSvc
+
+UserSvc -> DB: SELECT * FROM user\nWHERE email=? AND password=?
+activate DB
+DB --> UserSvc: User记录
+deactivate DB
+
+UserSvc --> API: User对象
+deactivate UserSvc
+
+alt 用户不存在
+    API --> Frontend: 401 Unauthorized\n"Email is not registered"
+else 用户已禁用
+    API --> Frontend: 403 Forbidden\n"Account disabled"
+else 认证成功
+    API -> API: 生成access_token
+    note right: access_token = get_uuid()
+    
+    API -> Session: login_user(user)
+    activate Session
+    Session -> Session: 创建会话
+    Session --> API: 会话创建成功
+    deactivate Session
+    
+    API -> DB: UPDATE user\nSET access_token=?, last_login_time=?\nWHERE id=?
+    activate DB
+    DB --> API: 更新成功
+    deactivate DB
+    
+    API --> Frontend: 200 OK\n{user_info, access_token}
+    Frontend --> User: 登录成功，跳转主页
+end
+
+deactivate API
+deactivate Frontend
+
+== 后续请求携带会话 ==
+User -> Frontend: 访问知识库列表
+activate Frontend
+
+Frontend -> API: GET /v1/kb/list\n[Cookie: session_id]
+activate API
+
+API -> Session: 验证会话
+activate Session
+Session -> Session: 检查session_id
+Session --> API: current_user
+deactivate Session
+
+alt 会话无效
+    API --> Frontend: 401 Unauthorized
+    Frontend --> User: 跳转登录页
+else 会话有效
+    API -> UserSvc: 获取用户租户
+    activate UserSvc
+    UserSvc -> DB: 查询UserTenant
+    DB --> UserSvc: 租户列表
+    UserSvc --> API: tenant_ids
+    deactivate UserSvc
+    
+    API --> Frontend: 200 OK\n{knowledgebases}
+    Frontend --> User: 显示知识库列表
+end
+
+deactivate API
+deactivate Frontend
+
+== 用户登出 ==
+User -> Frontend: 点击登出
+activate Frontend
+
+Frontend -> API: GET /v1/user/logout
+activate API
+
+API -> Session: logout_user()
+activate Session
+Session -> Session: 销毁会话
+Session --> API: 登出成功
+deactivate Session
+
+API --> Frontend: 200 OK
+Frontend --> User: 跳转登录页
+
+deactivate API
+deactivate Frontend
+
+@enduml

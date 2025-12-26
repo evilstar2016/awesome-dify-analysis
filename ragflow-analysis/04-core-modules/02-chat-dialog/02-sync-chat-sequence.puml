@@ -1,0 +1,176 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title 同步对话流程 (Synchronous Chat)
+
+actor 用户
+participant "前端界面\nReact" as Frontend
+participant "API 服务\ndialog_app.py" as API
+participant "RAG 引擎\nRAGChat" as RAG
+participant "检索器\nRetrieval" as Retrieval
+participant "Elasticsearch/\nInfinity" as ES
+participant "重排序器\nReranker" as Rerank
+participant "LLM 服务\nChatModel" as LLM
+participant "消息服务\nConversation" as ConvSvc
+database "MySQL" as DB
+
+用户 -> Frontend: 输入问题\n"如何使用 RAGFlow?"
+activate Frontend
+
+Frontend -> API: POST /api/v1/conversation/completion\\n{\\n  \"conversation_id\": \"conv_uuid\",\\n  \"messages\": [{\"role\": \"user\", \"content\": \"如何使用 RAGFlow?\"}],\\n  \"stream\": false\\n}
+activate API
+
+== 1. 获取对话配置 ==
+
+API -> DB: SELECT * FROM dialog\nWHERE id = ? AND tenant_id = ?
+activate DB
+DB --> API: Dialog 配置\n{kb_ids, llm_id, top_k, top_n, ...}
+deactivate DB
+
+== 2. 检索相关内容 ==
+
+API -> RAG: chat(\n  question="如何使用 RAGFlow?",\n  dialog_config=config\n)
+activate RAG
+
+RAG -> Retrieval: retrieve(\n  query=question,\n  kb_ids=dialog.kb_ids,\n  top_k=dialog.top_k\n)
+activate Retrieval
+
+=== 2.1 向量检索 ===
+
+Retrieval -> Retrieval: 编码查询\nquery_vec = embed(query)
+
+Retrieval -> ES: 向量搜索\nPOST /_search\n{\n  "knn": {\n    "embedding": query_vec,\n    "k": 1024\n  }\n}
+activate ES
+ES --> Retrieval: 返回 TopK 分块\n[{chunk, score}, ...]
+deactivate ES
+
+=== 2.2 全文检索 ===
+
+Retrieval -> ES: BM25 搜索\nPOST /_search\n{"query": {"match": {"content": query}}}
+activate ES
+ES --> Retrieval: 返回匹配分块\n[{chunk, score}, ...]
+deactivate ES
+
+=== 2.3 结果融合 ===
+
+Retrieval -> Retrieval: RRF 融合\nfused_results = rrf_merge(\n  vector_results,\n  bm25_results\n)
+
+=== 2.4 重排序 ===
+
+Retrieval -> Rerank: rerank(\n  query=query,\n  chunks=fused_results\n)
+activate Rerank
+Rerank --> Retrieval: 重排序结果\n[{chunk, rerank_score}, ...]
+deactivate Rerank
+
+Retrieval -> Retrieval: 截断 TopN\nfinal_chunks = sorted_chunks[:8]
+
+Retrieval --> RAG: 返回检索结果\n{\n  "chunks": [...],\n  "doc_aggs": {...}\n}
+deactivate Retrieval
+
+== 3. 构建提示词 ==
+
+RAG -> RAG: 格式化检索内容\ncontext = format_chunks(chunks)
+
+RAG -> RAG: 加载对话历史\nhistory = get_conversation_history(\n  dialog_id,\n  limit=5\n)
+
+RAG -> RAG: 构建完整提示词\nprompt = f'''\n{system_prompt}\n\n参考内容：\n{context}\n\n对话历史：\n{history}\n\n用户问题：{question}\n\n请基于参考内容回答问题。\n'''
+
+== 4. 调用 LLM ==
+
+RAG -> LLM: chat(\n  messages=[{"role": "user", "content": prompt}],\n  temperature=0.7,\n  max_tokens=2048\n)
+activate LLM
+
+LLM -> LLM: 调用 OpenAI API\nopenai.ChatCompletion.create(...)
+
+LLM --> RAG: 返回完整答案\n{\n  "answer": "RAGFlow 使用步骤如下...",\n  "usage": {"prompt_tokens": 1500, "completion_tokens": 300}\n}
+deactivate LLM
+
+== 5. 后处理 ==
+
+RAG -> RAG: 标注引用\nanswer_with_refs = add_citations(\n  answer,\n  chunks\n)
+
+RAG -> RAG: 聚合文档统计\ndoc_aggs = aggregate_by_document(chunks)
+
+RAG --> API: 返回完整结果\n{\n  "answer": "...",\n  "reference": [...],\n  "doc_aggs": [...],\n  "tokens": {...}\n}
+deactivate RAG
+
+== 6. 保存消息 ==
+
+API -> ConvSvc: save_conversation(\n  dialog_id=dialog_id,\n  user_message=question,\n  assistant_message=answer,\n  reference=chunks,\n  doc_aggs=doc_aggs\n)
+activate ConvSvc
+
+ConvSvc -> DB: INSERT INTO conversation\n(dialog_id, role='user', content=question)
+activate DB
+DB --> ConvSvc: 用户消息已保存
+deactivate DB
+
+ConvSvc -> DB: INSERT INTO conversation\n(dialog_id, role='assistant', content=answer, reference=...)
+activate DB
+DB --> ConvSvc: 助手消息已保存
+deactivate DB
+
+ConvSvc --> API: 保存成功
+deactivate ConvSvc
+
+== 7. 返回响应 ==
+
+API --> Frontend: 200 OK\n{\n  "code": 0,\n  "data": {\n    "answer": "RAGFlow 使用步骤如下...",\n    "reference": [\n      {\n        "doc_name": "用户手册.pdf",\n        "page": 5,\n        "content": "...",\n        "similarity": 0.85\n      }\n    ],\n    "doc_aggs": [\n      {"doc_id": "...", "doc_name": "...", "count": 3}\n    ]\n  }\n}
+deactivate API
+
+Frontend -> Frontend: 显示答案\n- 主答案文本\n- 引用卡片\n- 来源文档
+
+Frontend --> 用户: 展示完整答案
+deactivate Frontend
+
+note right of RAG
+  上下文组装策略：
+  1. 按相关性排序分块
+  2. 保留完整句子
+  3. 添加文档来源标记
+  4. 控制总 Token 数
+     (不超过 context_window * 0.7)
+end note
+
+note right of LLM
+  LLM 配置：
+  - model: gpt-4-turbo
+  - temperature: 0.7
+  - top_p: 0.9
+  - max_tokens: 2048
+  - presence_penalty: 0.0
+  
+  响应格式：
+  {
+    "answer": "...",
+    "tokens": {
+      "prompt": 1500,
+      "completion": 300,
+      "total": 1800
+    }
+  }
+end note
+
+note left of DB
+  Conversation 表：
+  - id (STRING, PK)
+  - dialog_id (STRING, FK)
+  - role (ENUM: user/assistant)
+  - content (TEXT)
+  - reference (JSON)
+  - doc_aggs (JSON)
+  - tokens (JSON)
+  - create_time (DATETIME)
+end note
+
+@enduml

@@ -1,0 +1,104 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title 创建知识库流程 (Create Knowledge Base)
+
+actor 用户
+participant "前端\nReact" as Frontend
+participant "API网关\nNginx" as Gateway
+participant "API服务\nkb_app.py" as API
+participant "知识库服务\nKnowledgebaseService" as Service
+database "MySQL" as DB
+participant "Elasticsearch/\nInfinity" as ES
+
+用户 -> Frontend: 点击"创建知识库"
+activate Frontend
+Frontend -> Frontend: 填写表单\n(名称、描述、配置)
+
+用户 -> Frontend: 提交表单
+Frontend -> Frontend: 参数验证\n- 名称不为空\n- 配置合法
+
+Frontend -> Gateway: POST /api/v1/kb/create\n+ JSON body
+activate Gateway
+Gateway -> API: 转发请求\n+ Authorization header
+activate API
+
+note right of API
+  验证 JWT Token
+  提取 tenant_id
+end note
+
+API -> API: 参数校验\n- name 必填\n- embd_id 合法\n- parser_config 格式正确
+
+API -> Service: create_with_name(\\n  name=req["name"],\\n  tenant_id=current_user.id,\\n  parser_id=req.get("parser_id"),\\n  **req\\n)
+activate Service
+
+Service -> Service: 生成 kb_id\nkb_id = get_uuid()
+
+Service -> Service: 构建 KB 对象\nKnowledgebase(\n  id=kb_id,\n  name=name,\n  tenant_id=tenant_id,\n  ...\n)
+
+Service -> DB: INSERT INTO knowledgebase\nVALUES (...)
+activate DB
+DB --> Service: 插入成功\nrow_count=1
+deactivate DB
+
+Service -> ES: 创建索引\nPUT /ragflow_chunks_{kb_id}
+activate ES
+
+ES -> ES: 创建 mapping\n- content: text\n- embedding: dense_vector\n- doc_id: keyword
+
+ES --> Service: 索引创建成功\n{acknowledged: true}
+deactivate ES
+
+Service --> API: 返回 KB 对象\nKnowledgebase
+deactivate Service
+
+API -> API: 序列化为 JSON\nkb.to_dict()
+
+API --> Gateway: 200 OK\n{\n  "code": 0,\n  "data": {...}\n}
+deactivate API
+
+Gateway --> Frontend: JSON Response
+deactivate Gateway
+
+Frontend -> Frontend: 更新知识库列表\nsetKnowledgeBases([...kbs, newKb])
+
+Frontend --> 用户: 显示成功提示\n"知识库创建成功"
+deactivate Frontend
+
+note right of Service
+  关键业务逻辑：
+  1. 生成唯一 kb_id
+  2. 保存到 MySQL
+  3. 创建 ES 索引
+  4. 初始化统计字段
+     (doc_num=0, chunk_num=0)
+end note
+
+note left of ES
+  ES 索引 Mapping：
+  {
+    "properties": {
+      "content": {"type": "text"},
+      "embedding": {
+        "type": "dense_vector",
+        "dims": 1536
+      },
+      "kb_id": {"type": "keyword"},
+      "doc_id": {"type": "keyword"}
+    }
+  }
+end note
+
+@enduml

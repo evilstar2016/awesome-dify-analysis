@@ -1,0 +1,167 @@
+@startuml permission-kb-access
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title RAGFlow 知识库访问权限检查流程
+
+actor "用户A\n(tenant_a)" as UserA
+participant "前端" as Frontend
+participant "API\n(/kb/list)" as API
+participant "TenantService" as TenantSvc
+participant "KnowledgebaseService" as KBSvc
+participant "check_kb_team_permission" as CheckPerm
+participant "数据库" as DB
+
+== 获取知识库列表 ==
+UserA -> Frontend: 访问知识库页面
+activate Frontend
+
+Frontend -> API: GET /v1/kb/list\n[Cookie: session_id]
+activate API
+
+API -> API: @login_required装饰器验证
+note right: current_user = UserA
+
+== 1. 查询用户所属租户 ==
+API -> TenantSvc: get_joined_tenants_by_user_id(UserA.id)
+activate TenantSvc
+
+TenantSvc -> DB: SELECT t.* FROM tenant t\nJOIN user_tenant ut ON t.id = ut.tenant_id\nWHERE ut.user_id = 'UserA'\nAND ut.status = 'VALID'
+activate DB
+DB --> TenantSvc: [tenant_a, tenant_b]
+note right
+UserA加入了2个租户：
+- tenant_a (owner角色)
+- tenant_b (normal角色)
+end note
+deactivate DB
+
+TenantSvc --> API: tenant_ids = [tenant_a, tenant_b]
+deactivate TenantSvc
+
+== 2. 查询租户的知识库 ==
+API -> KBSvc: get_by_tenant_ids(\n  tenant_ids=[tenant_a, tenant_b],\n  user_id=UserA.id\n)
+activate KBSvc
+
+KBSvc -> DB: SELECT * FROM knowledgebase\nWHERE tenant_id IN ('tenant_a', 'tenant_b')\nAND status = 'VALID'
+activate DB
+DB --> KBSvc: [kb1, kb2, kb3, kb4, kb5]
+note right
+kb1: tenant_a, permission=ME, created_by=UserA
+kb2: tenant_a, permission=TEAM, created_by=UserB
+kb3: tenant_b, permission=ME, created_by=UserB
+kb4: tenant_b, permission=TEAM, created_by=UserC
+kb5: tenant_a, permission=ME, created_by=UserC
+end note
+deactivate DB
+
+== 3. 权限过滤 ==
+loop 遍历每个知识库
+    KBSvc -> KBSvc: 检查权限
+    
+    alt kb1 (tenant_a, ME, UserA创建)
+        note right: ✓ tenant_id匹配 且 created_by=UserA
+        KBSvc -> KBSvc: 添加到结果
+    else kb2 (tenant_a, TEAM, UserB创建)
+        note right: ✓ tenant_id匹配 且 permission=TEAM
+        KBSvc -> KBSvc: 添加到结果
+    else kb3 (tenant_b, ME, UserB创建)
+        note right: ✗ permission=ME 但 created_by≠UserA
+        KBSvc -> KBSvc: 跳过（无权限）
+    else kb4 (tenant_b, TEAM, UserC创建)
+        note right: ✓ tenant_id匹配 且 permission=TEAM
+        KBSvc -> KBSvc: 添加到结果
+    else kb5 (tenant_a, ME, UserC创建)
+        note right: ✗ permission=ME 但 created_by≠UserA
+        KBSvc -> KBSvc: 跳过（无权限）
+    end
+end
+
+KBSvc --> API: filtered_kbs = [kb1, kb2, kb4]
+deactivate KBSvc
+
+API --> Frontend: 200 OK\n{knowledgebases: [kb1, kb2, kb4]}
+Frontend --> UserA: 显示3个知识库
+deactivate API
+deactivate Frontend
+
+== 访问特定知识库详情 ==
+UserA -> Frontend: 点击知识库kb2
+activate Frontend
+
+Frontend -> API: GET /v1/kb/detail?kb_id=kb2
+activate API
+
+API -> API: @login_required验证
+
+== 详细权限检查 ==
+API -> KBSvc: get_by_id(kb2)
+activate KBSvc
+KBSvc -> DB: SELECT * FROM knowledgebase WHERE id='kb2'
+activate DB
+DB --> KBSvc: kb2 {tenant_id: tenant_a, permission: TEAM}
+deactivate DB
+KBSvc --> API: kb2对象
+deactivate KBSvc
+
+API -> CheckPerm: check_kb_team_permission(kb2, UserA.id)
+activate CheckPerm
+
+CheckPerm -> CheckPerm: 检查tenant_id
+note right
+kb_tenant_id = tenant_a
+user_id = UserA.id
+end note
+
+alt tenant_id == user_id
+    CheckPerm --> API: True (租户所有者直接授权)
+else kb.permission != TEAM
+    CheckPerm --> API: False (非团队知识库)
+else 检查用户是否在租户内
+    CheckPerm -> TenantSvc: get_joined_tenants_by_user_id(UserA.id)
+    activate TenantSvc
+    TenantSvc -> DB: SELECT ... (同上)
+    DB --> TenantSvc: [tenant_a, tenant_b]
+    TenantSvc --> CheckPerm: tenants
+    deactivate TenantSvc
+    
+    CheckPerm -> CheckPerm: tenant_a in tenants?
+    CheckPerm --> API: True (用户在tenant_a内)
+end
+deactivate CheckPerm
+
+alt 有权限
+    API --> Frontend: 200 OK {kb_detail}
+    Frontend --> UserA: 显示知识库详情
+else 无权限
+    API --> Frontend: 403 Forbidden
+    Frontend --> UserA: "无权限访问该知识库"
+end
+
+deactivate API
+deactivate Frontend
+
+== 文件级权限检查示例 ==
+note over UserA, DB
+**文件权限检查逻辑**:
+1. 检查file.tenant_id == user_id (文件所属租户)
+2. 查找文件关联的所有知识库
+3. 对每个知识库调用 check_kb_team_permission
+4. 只要有一个知识库有权限，文件就可访问
+
+这保证了：
+- 私有知识库(ME)的文件不会被团队成员访问
+- 团队知识库(TEAM)的文件可以被团队成员共享
+end note
+
+@enduml

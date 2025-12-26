@@ -1,0 +1,218 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title 表格提取流程 (Table Extraction)
+
+participant "PDF 解析器\npdf_parser.py" as Parser
+participant "版面分析器\nLayoutRecognizer" as Layout
+participant "表格结构识别器\nTableStructureRecognizer" as TableDet
+participant "文本框\nboxes (OCR结果)" as Boxes
+participant "表格组装器\n_merge_*_text" as Merger
+
+Parser -> Parser: parse_into_bboxes(fnm)
+activate Parser
+
+== 1. 版面分析 ==
+
+Parser -> Layout: layout_recognizer(page_images)
+activate Layout
+
+Layout -> Layout: 运行版面检测模型\nlayout_model.predict(imgs)
+
+note over Layout
+检测 13 种布局类型，包括：\n- text, title, figure, table,\n- header, footer, caption, etc.
+end note
+
+Layout --> Parser: page_layout = [\n  [\n    {"type": "table", "bbox": [x0, top, x1, bottom]},\n    {"type": "text", "bbox": [...]},\n    ...\n  ],\n  ... (每页的布局)\n]
+deactivate Layout
+
+Parser -> Parser: 标记表格区域\nfor layout in page_layout:\n  for region in layout:\n    if region["type"] == "table":\n      table_regions.append(region)
+
+note over Parser
+版面分析提供粗粒度的\n表格位置信息
+end note
+
+== 2. 表格结构识别 ==
+
+Parser -> Parser: _table_transformer_job(zoomin=3)
+activate Parser #LightBlue
+
+note over Parser
+使用 TableStructureRecognizer\n进行细粒度表格组件检测
+end note
+
+== 2.1 裁剪表格图像 ==
+
+loop 遍历每个表格区域
+
+    Parser -> Parser: 裁剪表格图像\nleft = tb["x0"] - MARGIN\ntop = tb["top"] - MARGIN\nright = tb["x1"] + MARGIN\nbottom = tb["bottom"] + MARGIN\n\ntable_img = page_image.crop(\n  (left, top, right, bottom)\n)
+
+    note over Parser
+    添加边距 (MARGIN=10)\n避免裁剪掉表格边缘
+    end note
+
+    Parser -> Parser: imgs.append(table_img)\npos.append((left, top))
+
+end
+
+== 2.2 表格组件检测 ==
+
+Parser -> TableDet: tbl_det(imgs)
+activate TableDet
+
+note over TableDet
+TableStructureRecognizer\n基于深度学习的表格结构检测
+end note
+
+TableDet -> TableDet: 批量检测表格组件\nloop 每个表格图像\n  components = model.predict(img)
+
+note over TableDet
+检测 5 种表格组件：\n- table row (行)\n- table column (列)\n- table header (表头)\n- table spanning cell (跨列单元格)\n- table projected row header (投影表头)
+end note
+
+TableDet --> Parser: recos = [\n  [\n    {"label": "table row", "x0": ..., "top": ..., "x1": ..., "bottom": ..., "score": 0.98},\n    {"label": "table column", ...},\n    {"label": "table header", ...},\n    ...\n  ],\n  ... (每个表格的组件列表)\n]
+deactivate TableDet
+
+== 2.3 坐标转换与标记 ==
+
+Parser -> Parser: 转换坐标到页面坐标系\nloop 每个表格组件\n  # 转换为原始图像坐标\n  component["x0"] = (component["x0"] + crop_left) / zoomin\n  component["top"] = (component["top"] + crop_top) / zoomin + page_cum_height[page_num]\n  ...\n  \n  # 添加页码和布局索引\n  component["pn"] = page_num\n  component["layoutno"] = table_index
+
+note over Parser
+将裁剪图像中的局部坐标\n转换为 PDF 全局坐标
+end note
+
+Parser -> Parser: self.tb_cpns.extend(components)
+
+== 2.4 组件分类与排序 ==
+
+Parser -> Parser: 按类型收集组件\nheaders = gather(r".*header$")\nrows = gather(r".* (row|header)")\ncolumns = gather(r"table column$")\nspans = gather(r".*spanning")
+
+note over Parser
+gather() 函数：\n1. 按正则表达式筛选组件\n2. 按 Y 坐标排序\n3. 清理重叠和低质量组件
+end note
+
+Parser -> Parser: 排序列组件\ncolumns.sort(key=lambda x: (\n  x["pn"], x["layoutno"], x["x0"]\n))
+
+== 2.5 标记文本框的表格属性 ==
+
+loop 遍历每个 OCR 文本框 in boxes
+
+    alt 文本框在表格区域内
+
+        Parser -> Boxes: 查找重叠的行组件\nrow_idx = find_overlapped_with_threshold(\n  box, rows, thr=0.3\n)
+        activate Boxes
+
+        alt 找到重叠行
+
+            Boxes --> Parser: row_idx, row_info
+
+            Parser -> Parser: 标记行属性\nbox["R"] = row_idx\nbox["R_top"] = row["top"]\nbox["R_bott"] = row["bottom"]
+
+        end
+
+        Parser -> Boxes: 查找重叠的表头组件\nheader_idx = find_overlapped_with_threshold(\n  box, headers, thr=0.3\n)
+
+        alt 找到重叠表头
+
+            Boxes --> Parser: header_idx, header_info
+
+            Parser -> Parser: 标记表头属性\nbox["H"] = header_idx\nbox["H_top"] = header["top"]\nbox["H_bott"] = header["bottom"]\nbox["H_left"] = header["x0"]\nbox["H_right"] = header["x1"]
+
+        end
+
+        Parser -> Boxes: 查找最匹配的列组件\ncolumn_idx = find_horizontally_tightest_fit(\n  box, columns\n)
+
+        alt 找到匹配列
+
+            Boxes --> Parser: column_idx, column_info
+
+            Parser -> Parser: 标记列属性\nbox["C"] = column_idx\nbox["C_left"] = column["x0"]\nbox["C_right"] = column["x1"]
+
+        end
+
+        Parser -> Boxes: 查找跨列单元格\nspan_idx = find_overlapped_with_threshold(\n  box, spans, thr=0.3\n)
+
+        alt 找到跨列单元格
+
+            Boxes --> Parser: span_idx, span_info
+
+            Parser -> Parser: 标记跨列属性\nbox["SP"] = span_idx\nbox["H_top"] = span["top"]\nbox["H_bott"] = span["bottom"]\nbox["H_left"] = span["x0"]\nbox["H_right"] = span["x1"]
+
+        end
+
+        deactivate Boxes
+
+    end
+
+end
+
+note over Parser
+文本框现在包含表格元信息：\n- R: 所属行索引\n- C: 所属列索引\n- H: 是否为表头\n- SP: 是否为跨列单元格
+end note
+
+deactivate Parser
+
+== 3. 表格内容组装 ==
+
+Parser -> Merger: 组装表格内容
+activate Merger
+
+note over Merger
+根据 R/C/H 标记，\n将文本框组装成表格结构
+end note
+
+Merger -> Merger: 按行分组\ntable_rows = group_by(boxes, key="R")
+
+loop 遍历每一行
+
+    Merger -> Merger: 按列分组\nrow_cells = group_by(row_boxes, key="C")
+
+    loop 遍历每一列
+
+        Merger -> Merger: 合并单元格内文本\ncell_text = merge_text(\n  cell_boxes,\n  direction="vertical"  # 纵向合并\n)
+
+        note over Merger
+        _naive_vertical_merge():\n1. 按 Y 坐标排序文本行\n2. 检测行间距\n3. 合并相邻文本
+        end note
+
+        Merger -> Merger: cells[row][col] = cell_text
+
+    end
+
+end
+
+== 3.1 表格格式化 ==
+
+Merger -> Merger: 转换为 Markdown 格式\nmarkdown_table = format_as_markdown(\n  cells, headers\n)
+
+note over Merger
+Markdown 格式示例：\n| 列1 | 列2 | 列3 |\n|-----|-----|-----|\n| 值1 | 值2 | 值3 |
+end note
+
+Merger --> Parser: table_data = {\n  "type": "table",\n  "content": markdown_table,\n  "rows": num_rows,\n  "cols": num_cols,\n  "bbox": table_bbox,\n  "page": page_num\n}
+deactivate Merger
+
+== 4. 表格结果输出 ==
+
+Parser -> Parser: 保存表格块\ntable_blocks.append(table_data)
+
+Parser -> Parser: 返回解析结果\nreturn {\n  "text_blocks": [...],\n  "table_blocks": [...],\n  "image_blocks": [...]\n}
+
+deactivate Parser
+
+note over Parser
+最终输出包含：\n- 完整的表格内容 (Markdown)\n- 表格位置和页码\n- 行列数统计\n- 原始文本框信息
+end note
+
+@enduml

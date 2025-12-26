@@ -1,0 +1,179 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title 知识图谱构建流程 (Knowledge Graph Building)
+
+participant "任务Worker" as Worker
+participant "图谱构建器\nGraphBuilder" as Builder
+database "MySQL" as DB
+participant "实体解析器\nEntityResolver" as Resolver
+participant "LLM服务\nOpenAI" as LLM
+participant "图数据库\nNeo4j/内存" as Graph
+
+Worker -> DB: 查询知识库文档\nSELECT * FROM document\nWHERE kb_id = ? AND status = 'DONE'
+activate Worker
+activate DB
+DB --> Worker: 返回文档列表\n[{doc_id, content}, ...]
+deactivate DB
+
+Worker -> Builder: build_graph(\n  kb_id=kb_id,\n  documents=docs\n)
+activate Builder
+
+Builder -> DB: 创建图谱任务\nINSERT INTO task\n(type='build_graph', kb_id=kb_id)
+activate DB
+DB --> Builder: 任务创建成功
+deactivate DB
+
+== 1. 实体抽取 ==
+
+loop 每个文档
+    Builder -> Resolver: extract_entities(\n  text=doc.content\n)
+    activate Resolver
+    
+    Resolver -> Resolver: 构建提示词\nprompt = f'''\n从以下文本中提取实体：\n{text}\n\n返回JSON格式：\n{{\n  "entities": [\n    {{"name": "...", "type": "..."}}\n  ]\n}}\n'''
+    
+    Resolver -> LLM: 调用 LLM\nchat(prompt)
+    activate LLM
+    
+    LLM -> LLM: 生成结构化输出\nGPT-4 with JSON mode
+    
+    LLM --> Resolver: 返回实体列表\n{\n  "entities": [\n    {"name": "RAGFlow", "type": "Product"},\n    {"name": "InfiniFlow", "type": "Company"}\n  ]\n}
+    deactivate LLM
+    
+    Resolver -> Resolver: 解析 JSON\nentities = json.loads(response)
+    
+    Resolver --> Builder: 返回实体\n[Entity(name, type, doc_id), ...]
+    deactivate Resolver
+    
+    Builder -> Builder: 收集实体\nall_entities.extend(entities)
+end
+
+== 2. 实体消歧与合并 ==
+
+Builder -> Builder: 实体去重\nunique_entities = deduplicate(\n  entities,\n  by_similarity=0.9\n)
+
+Builder -> Builder: 实体链接\nfor entity in entities:\n  if similar_entity exists:\n    merge(entity, similar_entity)
+
+== 3. 关系抽取 ==
+
+loop 每个文档的实体对
+    Builder -> Resolver: extract_relations(\n  text=doc.content,\n  entities=doc_entities\n)
+    activate Resolver
+    
+    Resolver -> Resolver: 构建关系抽取提示词\nprompt = f'''\n从文本中找出实体间的关系：\n实体：{entities}\n文本：{text}\n\n返回JSON：\n{{\n  "relations": [\n    {{\n      "subject": "...",\n      "predicate": "...",\n      "object": "..."\n    }}\n  ]\n}}\n'''
+    
+    Resolver -> LLM: 调用 LLM
+    activate LLM
+    LLM --> Resolver: 返回关系列表
+    deactivate LLM
+    
+    Resolver --> Builder: 返回关系\n[Relation(subj, pred, obj), ...]
+    deactivate Resolver
+    
+    Builder -> Builder: 收集关系\nall_relations.extend(relations)
+end
+
+== 4. 存储到图数据库 ==
+
+Builder -> Graph: 创建图\nCREATE DATABASE kb_{kb_id}_graph
+activate Graph
+
+loop 每个实体
+    Builder -> Graph: 创建节点\nCREATE (e:Entity {\n  id: entity.id,\n  name: entity.name,\n  type: entity.type,\n  doc_id: entity.doc_id\n})
+    Graph --> Builder: 节点创建成功
+end
+
+loop 每个关系
+    Builder -> Graph: 创建关系边\nMATCH (a:Entity {name: rel.subject}),\n      (b:Entity {name: rel.object})\nCREATE (a)-[r:RELATION {\n  type: rel.predicate\n}]->(b)
+    Graph --> Builder: 关系创建成功
+end
+
+== 5. 图统计分析 ==
+
+Builder -> Graph: 计算 PageRank\nCALL algo.pageRank.stream({\n  nodeLabel: 'Entity',\n  relationshipType: 'RELATION'\n})\nYIELD nodeId, score
+activate Graph
+Graph --> Builder: 返回 PageRank 分数\n[{entity_id, score}, ...]
+deactivate Graph
+
+Builder -> Graph: 社区检测\nCALL algo.louvain.stream({\n  nodeLabel: 'Entity'\n})
+activate Graph
+Graph --> Builder: 返回社区划分\n[{entity_id, community}, ...]
+deactivate Graph
+
+Builder -> Builder: 保存图统计信息\ngraph_stats = {\n  "node_count": len(entities),\n  "edge_count": len(relations),\n  "communities": community_count\n}
+
+== 6. 索引优化 ==
+
+Builder -> Graph: 创建索引\nCREATE INDEX ON :Entity(name)\nCREATE INDEX ON :Entity(type)
+activate Graph
+Graph --> Builder: 索引创建成功
+deactivate Graph
+
+deactivate Graph
+
+Builder -> DB: 更新任务状态\nUPDATE task\nSET status = 'DONE',\n    result = graph_stats
+activate DB
+DB --> Builder: 更新成功
+deactivate DB
+
+Builder -> DB: 保存图谱元数据\nUPDATE knowledgebase\nSET knowledge_graph_kwd = graph_stats
+activate DB
+DB --> Builder: 保存成功
+deactivate DB
+
+Builder --> Worker: 图谱构建完成\n{\n  "entities": 1250,\n  "relations": 3420,\n  "communities": 15\n}
+deactivate Builder
+
+Worker --> Worker: 任务完成
+deactivate Worker
+
+note right of Resolver
+  实体类型：
+  - Person (人物)
+  - Organization (组织)
+  - Location (地点)
+  - Product (产品)
+  - Concept (概念)
+  - Event (事件)
+end note
+
+note right of Builder
+  实体消歧方法：
+  1. 字符串相似度
+     - Levenshtein 距离
+     - Jaccard 相似度
+  
+  2. 语义相似度
+     - 嵌入向量余弦
+  
+  3. 上下文匹配
+     - 共现关系
+end note
+
+note left of Graph
+  图谱应用：
+  1. 图谱检索
+     - 子图匹配
+     - 多跳查询
+  
+  2. 知识推理
+     - 路径推理
+     - 规则推理
+  
+  3. 可视化
+     - 实体关系图
+     - 社区结构图
+end note
+
+@enduml

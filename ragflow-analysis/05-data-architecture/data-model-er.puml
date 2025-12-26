@@ -1,0 +1,294 @@
+@startuml Data_Model_ER
+
+title RAGFlow 核心数据模型 ER 图
+
+!define TABLE class
+!define PK <<PK>>
+!define FK <<FK>>
+!define INDEX <<INDEX>>
+
+skinparam class {
+  BackgroundColor LightGrey
+  BorderColor Black
+  ArrowColor Black
+}
+
+' 用户与租户模型
+entity "User" as user {
+  * id : VARCHAR(32) PK
+  --
+  * access_token : VARCHAR(255) INDEX
+  * email : VARCHAR(255) INDEX
+  * nickname : VARCHAR(100) INDEX
+  password : VARCHAR(255)
+  avatar : TEXT
+  language : VARCHAR(32)
+  is_superuser : BOOLEAN
+  status : CHAR(1)
+  create_time : BIGINT INDEX
+  update_time : BIGINT
+}
+
+entity "Tenant" as tenant {
+  * id : VARCHAR(32) PK
+  --
+  name : VARCHAR(100) INDEX
+  * llm_id : VARCHAR(128) INDEX
+  * embd_id : VARCHAR(128) INDEX
+  * rerank_id : VARCHAR(128) INDEX
+  credit : INT
+  status : CHAR(1)
+  create_time : BIGINT
+  update_time : BIGINT
+}
+
+entity "UserTenant" as user_tenant {
+  * id : VARCHAR(32) PK
+  --
+  * user_id : VARCHAR(32) FK INDEX
+  * tenant_id : VARCHAR(32) FK INDEX
+  * role : VARCHAR(32) INDEX
+  invited_by : VARCHAR(32)
+  status : CHAR(1)
+}
+
+' 知识库模型
+entity "Knowledgebase" as kb {
+  * id : VARCHAR(32) PK
+  --
+  * tenant_id : VARCHAR(32) FK INDEX
+  * name : VARCHAR(128) INDEX
+  * embd_id : VARCHAR(128) INDEX
+  * parser_id : VARCHAR(32) INDEX
+  pipeline_id : VARCHAR(32) INDEX
+  parser_config : JSON
+  created_by : VARCHAR(32) INDEX
+  doc_num : INT INDEX
+  chunk_num : INT INDEX
+  similarity_threshold : FLOAT
+  graphrag_task_id : VARCHAR(32)
+  status : CHAR(1)
+  create_time : BIGINT
+}
+
+entity "Document" as doc {
+  * id : VARCHAR(32) PK
+  --
+  * kb_id : VARCHAR(256) FK INDEX
+  * parser_id : VARCHAR(32) INDEX
+  pipeline_id : VARCHAR(32) INDEX
+  * name : VARCHAR(255) INDEX
+  * type : VARCHAR(32) INDEX
+  location : VARCHAR(255)
+  size : INT INDEX
+  chunk_num : INT
+  progress : FLOAT INDEX
+  process_begin_at : DATETIME INDEX
+  meta_fields : JSON
+  status : CHAR(1)
+  create_time : BIGINT
+}
+
+entity "Task" as task {
+  * id : VARCHAR(32) PK
+  --
+  * doc_id : VARCHAR(32) FK INDEX
+  task_type : VARCHAR(32)
+  priority : INT
+  from_page : INT
+  to_page : INT
+  progress : FLOAT INDEX
+  retry_count : INT
+  chunk_ids : LONGTEXT
+  create_time : BIGINT
+}
+
+' 对话模型
+entity "Dialog" as dialog {
+  * id : VARCHAR(32) PK
+  --
+  * tenant_id : VARCHAR(32) FK INDEX
+  * name : VARCHAR(255) INDEX
+  * llm_id : VARCHAR(128)
+  * rerank_id : VARCHAR(128)
+  llm_setting : JSON
+  prompt_config : JSON
+  kb_ids : JSON
+  top_n : INT
+  top_k : INT
+  status : CHAR(1)
+  create_time : BIGINT
+}
+
+entity "Conversation" as conv {
+  * id : VARCHAR(32) PK
+  --
+  * dialog_id : VARCHAR(32) FK INDEX
+  user_id : VARCHAR(255) INDEX
+  name : VARCHAR(255)
+  message : JSON
+  reference : JSON
+  create_time : BIGINT
+}
+
+entity "API4Conversation" as api_conv {
+  * id : VARCHAR(32) PK
+  --
+  * dialog_id : VARCHAR(32) FK INDEX
+  * user_id : VARCHAR(255) INDEX
+  message : JSON
+  tokens : INT
+  duration : FLOAT INDEX
+  round : INT INDEX
+  create_time : BIGINT
+}
+
+' LLM模型
+entity "LLMFactories" as llm_factory {
+  * name : VARCHAR(128) PK
+  --
+  tags : VARCHAR(255) INDEX
+  logo : TEXT
+  rank : INT
+  status : CHAR(1)
+}
+
+entity "LLM" as llm {
+  * fid : VARCHAR(128) FK
+  * llm_name : VARCHAR(128)
+  --
+  * model_type : VARCHAR(128) INDEX
+  max_tokens : INT
+  tags : VARCHAR(255) INDEX
+  is_tools : BOOLEAN
+  status : CHAR(1)
+  ..
+  PRIMARY KEY (fid, llm_name)
+}
+
+entity "TenantLLM" as tenant_llm {
+  * tenant_id : VARCHAR(32) FK
+  * llm_factory : VARCHAR(128) FK
+  * llm_name : VARCHAR(128)
+  --
+  * model_type : VARCHAR(128) INDEX
+  api_key : TEXT
+  api_base : VARCHAR(255)
+  max_tokens : INT INDEX
+  used_tokens : INT INDEX
+  status : CHAR(1)
+  ..
+  PRIMARY KEY (tenant_id, llm_factory, llm_name)
+}
+
+' 文件管理
+entity "File" as file {
+  * id : VARCHAR(32) PK
+  --
+  * parent_id : VARCHAR(32) INDEX
+  * tenant_id : VARCHAR(32) FK INDEX
+  * name : VARCHAR(255) INDEX
+  * type : VARCHAR(32) INDEX
+  location : VARCHAR(255)
+  size : INT
+  create_time : BIGINT
+}
+
+entity "File2Document" as f2d {
+  * id : VARCHAR(32) PK
+  --
+  * file_id : VARCHAR(32) FK INDEX
+  * document_id : VARCHAR(32) FK INDEX
+}
+
+' 连接器
+entity "Connector" as connector {
+  * id : VARCHAR(32) PK
+  --
+  * tenant_id : VARCHAR(32) FK INDEX
+  name : VARCHAR(128)
+  * source : VARCHAR(128) INDEX
+  config : JSON
+  status : VARCHAR(16) INDEX
+  create_time : BIGINT
+}
+
+entity "Connector2Kb" as c2kb {
+  * id : VARCHAR(32) PK
+  --
+  * connector_id : VARCHAR(32) FK INDEX
+  * kb_id : VARCHAR(32) FK INDEX
+  auto_parse : CHAR(1)
+}
+
+' 评估系统
+entity "EvaluationDataset" as eval_dataset {
+  * id : VARCHAR(32) PK
+  --
+  * tenant_id : VARCHAR(32) FK INDEX
+  * name : VARCHAR(255) INDEX
+  kb_ids : JSON
+  created_by : VARCHAR(32) INDEX
+  create_time : BIGINT INDEX
+  status : INT
+}
+
+entity "EvaluationRun" as eval_run {
+  * id : VARCHAR(32) PK
+  --
+  * dataset_id : VARCHAR(32) FK INDEX
+  * dialog_id : VARCHAR(32) FK INDEX
+  name : VARCHAR(255)
+  status : VARCHAR(32)
+  create_time : BIGINT INDEX
+}
+
+' 关系定义
+user "1" -- "N" user_tenant : "has roles in"
+tenant "1" -- "N" user_tenant : "contains"
+tenant "1" -- "N" kb : "owns"
+tenant "1" -- "N" dialog : "owns"
+tenant "1" -- "N" tenant_llm : "configures"
+
+kb "1" -- "N" doc : "contains"
+doc "1" -- "N" task : "has"
+doc "N" -- "1" file : "from (via f2d)"
+
+dialog "1" -- "N" conv : "has sessions"
+dialog "1" -- "N" api_conv : "has api calls"
+
+llm_factory "1" -- "N" llm : "provides"
+llm_factory "1" -- "N" tenant_llm : "used by tenant"
+
+connector "N" -- "M" kb : "syncs to (via c2kb)"
+tenant "1" -- "N" connector : "owns"
+
+eval_dataset "1" -- "N" eval_run : "has runs"
+tenant "1" -- "N" eval_dataset : "owns"
+
+' 注释
+note top of user
+  用户表
+  - 支持多租户
+  - JWT认证
+end note
+
+note top of kb
+  知识库
+  - 支持多种解析器
+  - 支持GraphRAG
+end note
+
+note top of dialog
+  对话应用
+  - 支持多知识库
+  - 支持重排序
+end note
+
+note bottom of tenant_llm
+  租户LLM配置
+  - 支持多厂商
+  - Token计量
+end note
+
+@enduml

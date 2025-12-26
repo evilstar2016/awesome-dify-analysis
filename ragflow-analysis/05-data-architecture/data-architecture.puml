@@ -1,0 +1,146 @@
+@startuml Data_Architecture
+
+title RAGFlow 数据架构
+
+!define RECTANGLE class
+
+skinparam componentStyle rectangle
+skinparam backgroundColor #FEFEFE
+skinparam component {
+  BackgroundColor<<app>> LightSkyBlue
+  BackgroundColor<<dal>> LightGreen
+  BackgroundColor<<db>> LightYellow
+  BackgroundColor<<cache>> LightPink
+  BackgroundColor<<storage>> LightCoral
+}
+
+' 应用层
+package "应用层" <<app>> {
+    [Web UI] as web
+    [API Server] as api
+    [Task Executor] as task
+    [Sync Service] as sync
+}
+
+' 数据访问层
+package "数据访问层" <<dal>> {
+    [Peewee ORM] as orm
+    [Infinity Client] as infinity_client
+    [ES/OS Client] as es_client
+    [Redis Client] as redis_client
+    [MinIO Client] as minio_client
+}
+
+' 数据持久化层
+package "数据持久化层" {
+    
+    database "MySQL/PostgreSQL\n(元数据存储)" <<db>> as mysql {
+        collections "User/Tenant"
+        collections "Knowledgebase"
+        collections "Document"
+        collections "Dialog"
+        collections "Task"
+        collections "LLM Config"
+    }
+    
+    database "Infinity\n(向量索引)" <<db>> as infinity {
+        collections "tenant_kb vectors"
+        collections "HNSW Index"
+    }
+    
+    database "Elasticsearch/OpenSearch\n(全文检索)" <<db>> as es {
+        collections "tenant_id index"
+        collections "document chunks"
+        collections "BM25 Index"
+    }
+    
+    database "NetworkX\n(图数据库)" <<db>> as graph {
+        collections "Knowledge Graph"
+        collections "Entities & Relations"
+        collections "Communities"
+    }
+    
+    database "Redis/Valkey\n(缓存/队列)" <<cache>> as redis {
+        frame "缓存层" as cache
+        frame "任务队列" as queue
+        frame "分布式锁" as lock
+    }
+    
+    storage "MinIO/S3\n(对象存储)" <<storage>> as minio {
+        folder "Documents"
+        folder "Images"
+        folder "Parsed Results"
+    }
+}
+
+' 连接关系 - 应用层
+web --> api : HTTP/WebSocket
+api --> task : Task Queue
+sync --> api : Data Sync
+
+' 连接关系 - 数据访问层
+api --> orm : SQL
+api --> infinity_client : Vector Search
+api --> es_client : Full-text Search
+api --> redis_client : Cache/Queue
+api --> minio_client : File I/O
+
+task --> orm : SQL
+task --> infinity_client : Vector Insert
+task --> es_client : Index
+task --> redis_client : Queue
+task --> minio_client : File Read
+
+' 连接关系 - 持久化层
+orm --> mysql : TCP:3306/5432
+infinity_client --> infinity : TCP:23817
+es_client --> es : HTTP:9200/9201
+redis_client --> redis : TCP:6379
+minio_client --> minio : HTTP:9000
+
+' 注释
+note right of mysql
+  存储业务元数据
+  - 用户/租户
+  - 知识库/文档
+  - 对话/任务
+  - LLM配置
+end note
+
+note right of infinity
+  向量存储与检索
+  - HNSW索引
+  - 余弦相似度
+  - KNN搜索
+end note
+
+note right of es
+  全文检索引擎
+  - BM25算法
+  - IK分词
+  - 混合检索
+end note
+
+note right of graph
+  知识图谱存储
+  - 内存图结构
+  - 实体关系网络
+  - 社区检测
+  - GraphRAG支持
+end note
+
+note right of redis
+  缓存与任务队列
+  - Redis Streams
+  - 分布式锁
+  - 会话管理
+end note
+
+note right of minio
+  文件对象存储
+  - 原始文档
+  - 图片资源
+  - 解析结果
+end note
+
+@enduml

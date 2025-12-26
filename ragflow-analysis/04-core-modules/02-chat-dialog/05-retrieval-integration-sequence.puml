@@ -1,0 +1,218 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title 检索集成流程 (Retrieval Integration)
+
+participant "对话引擎\nasync_chat()" as Chat
+participant "检索服务\nretriever" as Retriever
+participant "嵌入模型\nEmbedding" as Embd
+participant "Elasticsearch/\nInfinity" as ES
+participant "重排模型\nReranker" as Rerank
+participant "LLM 模型\nChat Model" as LLM
+
+== 1. 问题预处理 ==
+
+Chat -> Chat: 提取用户问题\nquestions = [m["content"] for m in messages]
+
+alt 多轮对话精炼 (refine_multiturn)
+    Chat -> LLM: 合并多轮问题\n"请将以下对话合并为一个完整问题:\n- 用户: 什么是 RAG？\n- 助手: RAG 是检索增强生成...\n- 用户: 它有什么优势？"
+    activate LLM
+    LLM --> Chat: "RAG 检索增强生成有什么优势？"
+    deactivate LLM
+end
+
+alt 跨语言翻译 (cross_languages)
+    Chat -> LLM: 翻译问题\n"Translate to English: 什么是 RAG？"
+    activate LLM
+    LLM --> Chat: "What is RAG?"
+    deactivate LLM
+end
+
+alt 关键词提取 (keyword)
+    Chat -> LLM: 提取关键词\n"Extract keywords from: 什么是 RAG？"
+    activate LLM
+    LLM --> Chat: "RAG, 检索, 增强, 生成"
+    deactivate LLM
+    Chat -> Chat: 追加关键词\nquestion += " RAG 检索 增强 生成"
+end
+
+== 2. 向量检索 ==
+
+Chat -> Embd: 编码问题\nembd_mdl.encode(question)
+activate Embd
+
+Embd -> Embd: 将文本转换为向量\nvector = [0.1, 0.2, ..., 0.9]
+
+Embd --> Chat: 问题向量 (dimension: 1536/3072)
+deactivate Embd
+
+Chat -> Retriever: retrieval(\n  question,\n  embd_mdl,\n  tenant_ids,\n  kb_ids,\n  top_k=1024,\n  similarity_threshold=0.2\n)
+activate Retriever
+
+Retriever -> ES: 向量检索\n{\n  "query": {\n    "knn": {\n      "embedding": vector,\n      "k": 1024\n    }\n  },\n  "filter": {\n    "kb_id": ["kb1", "kb2"]\n  }\n}
+activate ES
+
+ES -> ES: 计算余弦相似度\nsimilarity = cosine(query_vector, chunk_vector)
+
+ES --> Retriever: Top 1024 候选分块\n[\n  {chunk_id, content, similarity: 0.85},\n  {chunk_id, content, similarity: 0.82},\n  ...\n]
+deactivate ES
+
+note right of Retriever
+  向量检索特点:
+  - 语义相似度匹配
+  - 支持同义词、多语言
+  - 对拼写错误鲁棒
+end note
+
+== 3. 全文检索 (BM25) ==
+
+Retriever -> ES: 全文检索\n{\n  "query": {\n    "match": {\n      "content": "什么是 RAG"\n    }\n  }\n}
+activate ES
+
+ES -> ES: BM25 算法\nscore = IDF × TF / (TF + k1)
+
+ES --> Retriever: 全文检索结果\n[\n  {chunk_id, content, bm25_score: 12.5},\n  ...\n]
+deactivate ES
+
+== 4. 混合检索 ==
+
+Retriever -> Retriever: 合并向量和全文结果\nfinal_score = \n  vector_score × vector_weight +\n  bm25_score × (1 - vector_weight)
+
+Retriever -> Retriever: 按混合得分排序\nsorted_chunks = sort_by_score(chunks)
+
+note right of Retriever
+  混合检索权重:
+  - vector_weight = 0.3
+  - 向量得分: 0.85 × 0.3 = 0.255
+  - BM25 得分: 12.5 × 0.7 = 8.75
+  - 混合得分: 0.255 + 8.75 = 9.005
+end note
+
+== 5. 重排序 (Rerank) ==
+
+Retriever -> Rerank: similarity(\n  question,\n  [chunk1, chunk2, ..., chunk1024]\n)
+activate Rerank
+
+Rerank -> Rerank: 计算问题与分块的相关性\nusing Cross-Encoder
+
+Rerank --> Retriever: 重排序得分\n[\n  {chunk_id, rerank_score: 0.92},\n  {chunk_id, rerank_score: 0.88},\n  ...\n]
+deactivate Rerank
+
+Retriever -> Retriever: 按重排得分排序\ntop_n_chunks = chunks[:top_n]
+
+note right of Retriever
+  重排模型:
+  - BGE-reranker-large
+  - Cohere Rerank
+  - Jina Reranker
+  
+  优势:
+  - 更精确的相关性判断
+  - 考虑问题与分块的交互
+end note
+
+== 6. 上下文扩展 ==
+
+alt 子分块检索 (children chunks)
+    Retriever -> ES: 查询父分块和子分块\nparent_id, children_ids
+    activate ES
+    ES --> Retriever: 扩展后的分块
+    deactivate ES
+end
+
+alt 目录增强 (toc_enhance)
+    Retriever -> LLM: 基于目录匹配相关章节
+    activate LLM
+    LLM --> Retriever: 目录相关内容
+    deactivate LLM
+    Retriever -> ES: 检索目录对应的分块
+    activate ES
+    ES --> Retriever: 目录分块
+    deactivate ES
+end
+
+alt 知识图谱检索 (use_kg)
+    Retriever -> ES: 查询知识图谱\n{\n  "query": {\n    "match": {\n      "entity": "RAG"\n    }\n  }\n}
+    activate ES
+    ES --> Retriever: 实体和关系\n[\n  {entity: "RAG", relation: "is_a", target: "技术"},\n  {entity: "RAG", relation: "uses", target: "检索"},\n  ...\n]
+    deactivate ES
+end
+
+Retriever --> Chat: 最终检索结果\n{\n  "total": 1024,\n  "chunks": [\n    {\n      "id": "chunk_uuid",\n      "content": "RAG 是检索增强生成...",\n      "doc_id": "doc_uuid",\n      "similarity": 0.92,\n      "doc_name": "RAG 技术白皮书.pdf"\n    },\n    ...\n  ],\n  "doc_aggs": [\n    {\n      "doc_id": "doc_uuid",\n      "doc_name": "RAG 技术白皮书.pdf",\n      "count": 5\n    },\n    ...\n  ]\n}
+deactivate Retriever
+
+== 7. 提示词组装 ==
+
+Chat -> Chat: 构建知识提示词\nknowledges = kb_prompt(kbinfos, max_tokens)
+
+note right of Chat
+  提示词结构:
+  
+  系统提示词:
+  You are a helpful assistant.
+  Use the following knowledge:
+  
+  ------
+  [分块1内容]
+  ------
+  
+  [分块2内容]
+  ------
+  
+  用户问题:
+  什么是 RAG？
+end note
+
+Chat -> Chat: 检查 Token 数量\nused_tokens = count_tokens(prompt)
+
+alt Token 超限
+    Chat -> Chat: 截断分块内容\ntruncate_chunks(max_tokens * 0.95)
+end
+
+== 8. LLM 生成答案 ==
+
+Chat -> LLM: async_chat(\n  prompt + citation_prompt,\n  messages,\n  gen_conf\n)
+activate LLM
+
+LLM -> LLM: 生成答案\n基于检索内容回答问题
+
+LLM --> Chat: 生成的答案\n"RAG 是检索增强生成 (Retrieval-Augmented Generation) 的缩写..."
+deactivate LLM
+
+== 9. 引用标注 ==
+
+Chat -> Retriever: insert_citations(\n  answer,\n  chunk_contents,\n  chunk_vectors,\n  embd_mdl\n)
+activate Retriever
+
+Retriever -> Retriever: 计算答案句子与分块的相似度
+
+Retriever -> Retriever: 插入引用标注\n"RAG 是检索增强生成[ID:0]。它结合了检索和生成[ID:1]。"
+
+Retriever --> Chat: 带引用的答案
+deactivate Retriever
+
+== 10. 返回结果 ==
+
+Chat -> Chat: 组装最终响应\n{\n  "answer": "RAG 是检索增强生成[ID:0]...",\n  "reference": {...},\n  "prompt": "...",\n  "created_at": timestamp\n}
+
+note right of Chat
+  性能统计:
+  - 总耗时: 1500ms
+  - 检索耗时: 800ms
+  - 生成耗时: 700ms
+  - Token 数: 256
+  - Token 速度: 366 token/s
+end note
+
+@enduml

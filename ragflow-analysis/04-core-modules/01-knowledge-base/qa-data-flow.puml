@@ -1,0 +1,155 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title RAGFlow 知识库问答完整数据流
+
+actor 用户
+participant "Web 前端\n(React)" as Frontend
+participant "Nginx\n反向代理" as Nginx
+participant "API 服务器\n(Quart)" as API
+participant "RAG 引擎" as RAG
+participant "搜索引擎\n(ES/Infinity)" as Search
+participant "LLM 服务" as LLM
+database "MySQL" as DB
+database "Redis\n缓存" as Cache
+
+== 用户提问阶段 ==
+用户 -> Frontend: 输入问题
+activate Frontend
+Frontend -> Frontend: 前端验证
+
+Frontend -> Nginx: POST /api/v1/dialog/completion
+activate Nginx
+note right
+  HTTPS 请求
+  携带 Session Cookie
+end note
+
+Nginx -> API: 转发请求
+activate API
+
+API -> API: Session 验证
+API -> Cache: 检查 Session
+activate Cache
+Cache --> API: Session 有效
+deactivate Cache
+
+== 业务处理阶段 ==
+API -> RAG: 调用对话处理
+activate RAG
+
+RAG -> RAG: 查询理解和改写
+note right of RAG
+  意图识别
+  查询扩展
+  关键词提取
+end note
+
+RAG -> DB: 加载知识库配置
+activate DB
+DB --> RAG: 知识库设置
+deactivate DB
+
+== 检索阶段 ==
+RAG -> Search: 向量检索
+activate Search
+note right
+  KNN 向量相似度搜索
+  Top-K 候选召回
+end note
+Search --> RAG: 向量检索结果
+
+RAG -> Search: 关键词检索
+note right
+  BM25 全文检索
+  布尔查询
+end note
+Search --> RAG: 关键词检索结果
+deactivate Search
+
+RAG -> RAG: 融合重排序
+note right of RAG
+  结果合并
+  相关性重排
+  去重和过滤
+end note
+
+== LLM 推理阶段 ==
+RAG -> RAG: 上下文组装
+note right
+  构建提示词
+  拼接检索结果
+  添加历史对话
+end note
+
+RAG -> Cache: 检查缓存
+activate Cache
+Cache --> RAG: 缓存未命中
+deactivate Cache
+
+RAG -> LLM: 流式调用 LLM
+activate LLM
+note right
+  POST /v1/chat/completions
+  stream=true
+end note
+
+== 流式响应阶段 ==
+loop 流式生成
+  LLM --> RAG: Token chunk
+  RAG --> API: SSE 事件
+  API --> Nginx: SSE 流
+  Nginx --> Frontend: SSE 推送
+  Frontend -> Frontend: 增量渲染
+end
+
+LLM --> RAG: 生成完成
+deactivate LLM
+
+== 后处理阶段 ==
+RAG -> RAG: 引用追溯
+note right of RAG
+  标记引用来源
+  生成引用链接
+end note
+
+RAG -> DB: 保存对话历史
+activate DB
+DB --> RAG: 保存成功
+deactivate DB
+
+RAG -> Cache: 缓存结果
+activate Cache
+Cache --> RAG: 缓存成功
+deactivate Cache
+
+RAG --> API: 返回完整响应
+deactivate RAG
+
+API --> Nginx: 响应数据
+deactivate API
+Nginx --> Frontend: 响应传递
+deactivate Nginx
+
+Frontend --> 用户: 显示答案和引用
+deactivate Frontend
+
+note over 用户, Cache
+  整个流程耗时: 2-5秒
+  - 检索: 100-300ms
+  - LLM推理: 1-4秒
+  - 其他: <500ms
+end note
+
+@enduml

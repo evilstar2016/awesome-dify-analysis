@@ -1,0 +1,11 @@
+### [权限管理子系统 (Permission Management System)](permission-management-system.md)
+- **职责**: 多租户权限控制、用户认证、资源隔离
+- **技术栈**: Quart-Auth + Peewee ORM + OAuth2/OIDC
+- **主要功能**: 多租户隔离、角色权限、第三方登录（GitHub/OIDC）、知识库权限控制
+- **文档大小**: ~30KB
+- **架构图**:
+  - [permission-architecture.puml](permission-architecture.puml) - 系统架构图
+  - [permission-data-model.puml](permission-data-model.puml) - 数据模型ER图
+  - [permission-auth-flow.puml](permission-auth-flow.puml) - 认证流程时序图
+  - [permission-oauth-flow.puml](permission-oauth-flow.puml) - OAuth/OIDC流程
+  - [permission-kb-access.puml](permission-kb-access.puml) - 知识库权限检查

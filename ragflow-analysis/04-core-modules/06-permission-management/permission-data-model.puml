@@ -1,0 +1,265 @@
+@startuml permission-data-model
+
+skinparam backgroundColor #FEFEFE
+skinparam linetype ortho
+skinparam roundcorner 10
+
+skinparam class {
+  BackgroundColor LightGrey
+  BorderColor Black
+  ArrowColor Black
+}
+
+title RAGFlow 权限管理数据模型（ER图）
+
+' 实体定义
+entity "User\n用户" as User {
+  **id** : VARCHAR(32) <<PK>>
+  --
+  access_token : VARCHAR(128)
+  nickname : VARCHAR(128)
+  password : VARCHAR(128) [加密]
+  email : VARCHAR(128) <<UNIQUE>>
+  avatar : VARCHAR(256)
+  language : VARCHAR(16)
+  timezone : VARCHAR(64)
+  last_login_time : TIMESTAMP
+  is_authenticated : BOOLEAN
+  is_active : BOOLEAN
+  is_anonymous : BOOLEAN
+  is_superuser : BOOLEAN
+  login_channel : VARCHAR(16)
+  --
+  登录渠道: password, github, feishu, oidc
+}
+
+entity "Tenant\n租户" as Tenant {
+  **id** : VARCHAR(32) <<PK>>
+  --
+  name : VARCHAR(128) <<UNIQUE>>
+  public_key : TEXT
+  llm_id : VARCHAR(32)
+  embd_id : VARCHAR(32)
+  asr_id : VARCHAR(32)
+  img2txt_id : VARCHAR(32)
+  rerank_id : VARCHAR(32)
+  tts_id : VARCHAR(32)
+  parser_ids : TEXT
+  credit : INTEGER
+  status : VARCHAR(16)
+  --
+  每个租户独立的模型配置
+}
+
+entity "UserTenant\n用户-租户关联" as UserTenant {
+  **id** : VARCHAR(32) <<PK>>
+  --
+  user_id : VARCHAR(32) <<FK>>
+  tenant_id : VARCHAR(32) <<FK>>
+  role : VARCHAR(16)
+  invited_by : VARCHAR(32)
+  status : VARCHAR(16)
+  --
+  role枚举:
+  - owner: 拥有者
+  - admin: 管理员
+  - normal: 普通用户
+  - invite: 待审核
+}
+
+entity "Knowledgebase\n知识库" as KB {
+  **id** : VARCHAR(32) <<PK>>
+  --
+  tenant_id : VARCHAR(32) <<FK>>
+  name : VARCHAR(128)
+  description : TEXT
+  language : VARCHAR(16)
+  embd_id : VARCHAR(32)
+  **permission** : VARCHAR(16)
+  **created_by** : VARCHAR(32)
+  doc_num : INTEGER
+  token_num : INTEGER
+  chunk_num : INTEGER
+  similarity_threshold : FLOAT
+  vector_similarity_weight : FLOAT
+  parser_id : VARCHAR(32)
+  parser_config : JSON
+  status : VARCHAR(16)
+  --
+  permission枚举:
+  - me: 个人私有
+  - team: 团队共享
+}
+
+entity "Document\n文档" as Document {
+  **id** : VARCHAR(32) <<PK>>
+  --
+  kb_id : VARCHAR(32) <<FK>>
+  name : VARCHAR(128)
+  location : VARCHAR(512)
+  size : BIGINT
+  token_num : INTEGER
+  chunk_num : INTEGER
+  parser_id : VARCHAR(32)
+  parser_config : JSON
+  type : VARCHAR(16)
+  status : VARCHAR(16)
+  --
+  文档类型: pdf, doc, visual等
+}
+
+entity "File\n文件" as File {
+  **id** : VARCHAR(32) <<PK>>
+  --
+  tenant_id : VARCHAR(32) <<FK>>
+  parent_id : VARCHAR(32)
+  name : VARCHAR(128)
+  location : VARCHAR(512)
+  size : BIGINT
+  type : VARCHAR(16)
+  source_type : VARCHAR(16)
+  status : VARCHAR(16)
+  --
+  文件是可共享的资源
+}
+
+entity "File2Document\n文件-文档关联" as F2D {
+  **id** : VARCHAR(32) <<PK>>
+  --
+  file_id : VARCHAR(32) <<FK>>
+  document_id : VARCHAR(32) <<FK>>
+  --
+  一个文件可以在多个知识库
+}
+
+entity "Dialog\n对话" as Dialog {
+  **id** : VARCHAR(32) <<PK>>
+  --
+  tenant_id : VARCHAR(32) <<FK>>
+  name : VARCHAR(128)
+  description : TEXT
+  language : VARCHAR(16)
+  kb_ids : JSON [知识库ID列表]
+  llm_id : VARCHAR(32)
+  prompt_config : JSON
+  status : VARCHAR(16)
+  --
+  对话绑定知识库
+}
+
+entity "APIToken\nAPI令牌" as APIToken {
+  **id** : VARCHAR(32) <<PK>>
+  --
+  tenant_id : VARCHAR(32) <<FK>>
+  token : VARCHAR(128) <<UNIQUE>>
+  dialog_id : VARCHAR(32)
+  create_time : TIMESTAMP
+  create_date : DATE
+  update_time : TIMESTAMP
+  update_date : DATE
+  --
+  用于API访问的令牌
+}
+
+' 关系定义
+User ||--o{ UserTenant : "user_id"
+Tenant ||--o{ UserTenant : "tenant_id"
+
+Tenant ||--o{ KB : "tenant_id\n(租户隔离)"
+User ||--o{ KB : "created_by\n(创建者)"
+
+KB ||--o{ Document : "kb_id"
+
+Tenant ||--o{ File : "tenant_id"
+File ||--o{ F2D : "file_id"
+Document ||--o{ F2D : "document_id"
+
+Tenant ||--o{ Dialog : "tenant_id"
+Tenant ||--o{ APIToken : "tenant_id"
+
+' 权限逻辑说明
+note right of UserTenant
+**用户-租户多对多关系**
+- 一个用户可以加入多个租户
+- 一个租户可以有多个用户
+- 每个用户在租户内有特定角色
+
+**角色权限**:
+• owner: 租户所有者，最高权限
+• admin: 租户管理员，管理权限
+• normal: 普通成员，基本权限
+• invite: 受邀用户，待审核
+end note
+
+note bottom of KB
+**知识库权限控制**
+
+**permission字段**:
+• me: 仅创建者可见
+• team: 租户团队内所有成员可见
+
+**权限判断逻辑**:
+1. 检查kb.tenant_id是否在用户的租户列表中
+2. 如果permission=me，检查created_by是否为当前用户
+3. 如果permission=team，租户内所有成员可访问
+
+**多租户隔离**:
+• tenant_id实现数据隔离
+• 搜索索引按tenant_id分离: index_{tenant_id}
+• 对象存储按kb_id分bucket
+end note
+
+note top of File
+**文件权限继承**
+
+文件权限检查逻辑:
+1. 检查file.tenant_id
+2. 查找文件关联的所有知识库(File2Document)
+3. 对每个知识库进行权限检查
+4. 只要有一个知识库有权限，文件就可访问
+
+这确保了:
+• 私有知识库(ME)的文件不会被泄露
+• 团队知识库(TEAM)的文件可以共享
+end note
+
+note left of Dialog
+**对话与知识库关联**
+
+Dialog.kb_ids存储知识库ID列表
+对话的权限=所有关联知识库的权限交集
+
+使用对话时会检查:
+1. 用户是否有权访问Dialog
+2. 用户是否有权访问Dialog中的所有kb_ids
+end note
+
+' 安全机制标注
+note bottom of User
+**认证与会话**
+• 密码加密存储
+• access_token用于API认证
+• login_channel记录登录来源
+• 支持OAuth/OIDC第三方登录
+
+**超级用户**:
+is_superuser=True的用户拥有全局权限
+end note
+
+note bottom of Tenant
+**租户级配置**
+• 每个租户独立的LLM配置
+• 独立的Embedding模型
+• 独立的解析器配置
+• 独立的信用额度管理
+end note
+
+note bottom of APIToken
+**API访问控制**
+• 每个token绑定一个租户
+• 可选绑定特定对话
+• 用于无会话的API调用
+• 需要定期轮换以保证安全
+end note
+
+@enduml

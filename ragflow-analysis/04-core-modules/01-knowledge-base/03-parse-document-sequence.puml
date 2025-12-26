@@ -1,0 +1,158 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title 文档解析流程 (Document Parsing)
+
+participant "任务Worker\nCelery" as Worker
+participant "DeepDoc\nParser" as Parser
+database "MySQL" as DB
+participant "MinIO\n对象存储" as MinIO
+participant "OCR引擎\nPaddleOCR" as OCR
+participant "分块服务\nChunkService" as ChunkSvc
+participant "嵌入服务\nEmbedding" as Embed
+participant "Elasticsearch/\nInfinity" as ES
+
+Worker -> DB: 获取待解析文档\nSELECT * FROM document\nWHERE status = 'NEW'
+activate Worker
+activate DB
+DB --> Worker: 返回文档记录\n{doc_id, kb_id, location, ...}
+deactivate DB
+
+Worker -> DB: 更新状态\nUPDATE document\nSET status = 'PARSING'
+activate DB
+DB --> Worker: 更新成功
+deactivate DB
+
+Worker -> MinIO: 下载文件\nGET /docs/{kb_id}/{doc_id}/original.pdf
+activate MinIO
+MinIO --> Worker: 返回文件二进制流
+deactivate MinIO
+
+Worker -> Parser: 选择解析器\nparser = get_parser(file_type)
+activate Parser
+
+alt 文件类型 = PDF
+    Parser -> Parser: pdfplumber.open(file)
+    Parser -> Parser: 提取文本内容\nfor page in pdf.pages:\n  text = page.extract_text()
+    
+    Parser -> Parser: 提取表格\ntables = camelot.read_pdf(file)
+    
+    Parser -> Parser: 提取图片\nfor image in page.images:\n  extract_image()
+    
+    Parser -> OCR: OCR识别图片文字\nocr.ocr(image_bytes)
+    activate OCR
+    OCR --> Parser: 返回识别结果\n[{"text": "...", "bbox": [...]}]
+    deactivate OCR
+    
+else 文件类型 = Word
+    Parser -> Parser: python-docx Document(file)
+    Parser -> Parser: 提取段落和表格
+    
+else 文件类型 = Excel
+    Parser -> Parser: openpyxl.load_workbook(file)
+    Parser -> Parser: 遍历工作表和单元格
+end
+
+Parser --> Worker: 返回解析结果\n{\n  "text": "完整文本",\n  "tables": [...],\n  "images": [...]\n}
+deactivate Parser
+
+Worker -> DB: 更新进度\nUPDATE document\nSET progress = 0.4,\n    progress_msg = '解析完成'
+activate DB
+DB --> Worker: 更新成功
+deactivate DB
+
+Worker -> ChunkSvc: 智能分块\nchunk_document(\n  content=text,\n  strategy='semantic',\n  chunk_size=128\n)
+activate ChunkSvc
+
+ChunkSvc -> ChunkSvc: 句子分割\nsentences = split_sentences(text)
+
+ChunkSvc -> ChunkSvc: 语义聚类\nclusters = semantic_clustering(sentences)
+
+ChunkSvc -> ChunkSvc: 生成分块\nfor cluster in clusters:\n  chunk = create_chunk(cluster)
+
+ChunkSvc --> Worker: 返回分块列表\n[Chunk, Chunk, ...]
+deactivate ChunkSvc
+
+Worker -> DB: 更新进度\nUPDATE document\nSET progress = 0.6,\n    chunk_num = len(chunks)
+activate DB
+DB --> Worker: 更新成功
+deactivate DB
+
+loop 每个分块批处理 (batch_size=32)
+    Worker -> Embed: 生成嵌入向量\nembed_batch([chunk1.content, ...])
+    activate Embed
+    
+    Embed -> Embed: 调用嵌入模型\n(OpenAI/本地模型)
+    
+    Embed --> Worker: 返回向量列表\n[[0.1, 0.2, ...], ...]
+    deactivate Embed
+    
+    Worker -> ES: 批量插入分块\nPOST /_bulk\n{\n  "index": {...},\n  "embedding": [...],\n  "content": "..."\n}
+    activate ES
+    ES --> Worker: 插入成功\n{items: [{status: 201}]}
+    deactivate ES
+end
+
+Worker -> DB: 更新最终状态\nUPDATE document\nSET status = 'DONE',\n    progress = 1.0,\n    token_num = total_tokens
+activate DB
+DB --> Worker: 更新成功
+deactivate DB
+
+Worker -> DB: 更新知识库统计\nUPDATE knowledgebase\nSET chunk_num = chunk_num + new_chunks,\n    doc_num = doc_num + 1
+activate DB
+DB --> Worker: 更新成功
+deactivate DB
+
+Worker --> Worker: 任务完成
+deactivate Worker
+
+note right of Parser
+  支持的文档格式：
+  - PDF (pdfplumber + camelot)
+  - Word (python-docx)
+  - Excel (openpyxl)
+  - PPT (python-pptx)
+  - Markdown (mistune)
+  - HTML (BeautifulSoup)
+  - TXT (plain text)
+end note
+
+note right of ChunkSvc
+  分块策略：
+  1. 固定大小分块
+     - 按 token 数切分
+  
+  2. 语义分块
+     - 句子嵌入
+     - 相似度聚类
+  
+  3. 递归分块
+     - 按段落/标题层级
+end note
+
+note left of ES
+  分块存储结构：
+  {
+    "id": "chunk_uuid",
+    "kb_id": "kb_uuid",
+    "doc_id": "doc_uuid",
+    "content": "分块内容",
+    "embedding": [0.1, ...],
+    "page_num": 5,
+    "position": {x, y, w, h},
+    "img_id": "image_uuid"
+  }
+end note
+
+@enduml

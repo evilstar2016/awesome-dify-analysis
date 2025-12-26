@@ -1,0 +1,185 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title 组件通信与数据传递 (Component Communication)
+
+participant "Begin\n开始节点" as Begin
+participant "Variable Assigner\n变量赋值" as VarAssign
+participant "Retrieval\n知识检索" as Retrieval
+participant "LLM\n语言模型" as LLM
+participant "Switch\n条件分支" as Switch
+participant "Message\n消息发送" as Message
+participant "全局变量\nGlobals" as Globals
+
+== 1. 初始化阶段 ==
+
+Begin -> Globals: 初始化全局变量\nglobals = {\n  "sys.query": "用户输入",\n  "sys.user_id": "user_123",\n  "sys.conversation_turns": 0,\n  "sys.files": []\n}
+activate Globals
+
+Begin -> Begin: 执行开始节点\noutput = {\n  "query": globals["sys.query"]\n}
+
+Begin -> Globals: 保存输出\nglobals["begin.output"] = output
+deactivate Globals
+
+== 2. 变量处理阶段 ==
+
+VarAssign -> Globals: 读取上游输出\nquery = globals["begin.output"]["query"]
+activate Globals
+
+VarAssign -> VarAssign: 变量赋值和转换\nprocessed_query = query.strip().lower()\nmax_results = 10\nlanguage = "zh"
+
+VarAssign -> Globals: 保存新变量\nglobals["var_assign_0.output"] = {\n  "processed_query": processed_query,\n  "max_results": max_results,\n  "language": language\n}
+deactivate Globals
+
+== 3. 知识检索阶段 ==
+
+Retrieval -> Globals: 读取参数\nquery = globals["var_assign_0.output"]["processed_query"]\nmax_results = globals["var_assign_0.output"]["max_results"]
+activate Globals
+
+Retrieval -> Retrieval: 执行检索\nchunks = search_knowledge_base(\n  query=query,\n  top_k=max_results\n)
+
+Retrieval -> Globals: 保存检索结果\nglobals["retrieval_0.output"] = {\n  "chunks": chunks,\n  "doc_aggs": doc_aggs\n}
+
+Retrieval -> Globals: 更新全局检索结果\nglobals["retrieval"] = {\n  "chunks": chunks,\n  "doc_aggs": doc_aggs\n}
+deactivate Globals
+
+== 4. LLM 生成阶段 ==
+
+LLM -> Globals: 读取上下文\nquery = globals["var_assign_0.output"]["processed_query"]\nchunks = globals["retrieval_0.output"]["chunks"]
+activate Globals
+
+LLM -> LLM: 构建提示词\ncontext = format_chunks(chunks)\nprompt = f'''\n基于以下内容回答问题：\n{context}\n\n问题：{query}\n回答：\n'''
+
+LLM -> LLM: 调用 LLM\nanswer = llm.chat(prompt)
+
+LLM -> Globals: 保存答案\nglobals["llm_0.output"] = {\n  "answer": answer,\n  "tokens": {"input": 500, "output": 200}\n}
+deactivate Globals
+
+== 5. 条件分支阶段 ==
+
+Switch -> Globals: 读取判断条件\ntokens_used = globals["llm_0.output"]["tokens"]["output"]
+activate Globals
+
+Switch -> Switch: 评估条件\nif tokens_used > 100:\n  next_component = "message_long"\nelse:\n  next_component = "message_short"
+
+Switch -> Globals: 保存分支决策\nglobals["switch_0.output"] = {\n  "next": next_component,\n  "condition_value": tokens_used\n}
+deactivate Globals
+
+== 6. 消息发送阶段 ==
+
+Message -> Globals: 读取最终数据\nanswer = globals["llm_0.output"]["answer"]\nreferences = globals["retrieval_0.output"]["chunks"]
+activate Globals
+
+Message -> Message: 格式化消息\nmessage_content = format_message(\n  answer=answer,\n  references=references\n)
+
+Message -> Message: 发送消息\nsend_to_user(message_content)
+
+Message -> Globals: 保存发送状态\nglobals["message_0.output"] = {\n  "status": "sent",\n  "timestamp": current_time()\n}
+deactivate Globals
+
+note right of Globals
+  全局变量结构：
+  
+  {
+    // 系统变量
+    "sys.query": "用户输入",
+    "sys.user_id": "user_123",
+    "sys.conversation_turns": 0,
+    "sys.files": [],
+    
+    // 组件输出
+    "begin.output": {...},
+    "var_assign_0.output": {...},
+    "retrieval_0.output": {...},
+    "llm_0.output": {...},
+    
+    // 全局共享数据
+    "retrieval": {
+      "chunks": [...],
+      "doc_aggs": [...]
+    },
+    
+    // 执行历史
+    "history": [
+      {"component": "begin", "output": {...}},
+      {"component": "var_assign_0", "output": {...}}
+    ]
+  }
+end note
+
+note right of VarAssign
+  变量引用语法：
+  
+  1. 直接引用
+     {{begin.output.query}}
+  
+  2. 系统变量
+     {{sys.query}}
+     {{sys.user_id}}
+  
+  3. 数组访问
+     {{sys.files[0]}}
+  
+  4. 嵌套访问
+     {{retrieval_0.output.chunks[0].content}}
+  
+  5. 表达式
+     {{llm_0.output.tokens.input + llm_0.output.tokens.output}}
+end note
+
+note left of Switch
+  条件分支类型：
+  
+  1. 基于值的分支
+     condition: {{variable}}
+     cases: {
+       "value1": "component_a",
+       "value2": "component_b"
+     }
+  
+  2. 基于表达式的分支
+     condition: {{tokens > 100}}
+     cases: {
+       "true": "long_handler",
+       "false": "short_handler"
+     }
+  
+  3. 默认分支
+     default: "fallback_component"
+end note
+
+note right of LLM
+  组件输入参数解析：
+  
+  参数配置：
+  {
+    "prompt": "回答{{sys.query}}，\n基于{{retrieval_0.output.chunks}}",
+    "temperature": 0.7
+  }
+  
+  解析后：
+  {
+    "prompt": "回答用户问题，\n基于[chunk1, chunk2, ...]",
+    "temperature": 0.7
+  }
+  
+  支持的变量类型：
+  - 字符串
+  - 数字
+  - 布尔值
+  - 数组
+  - 对象
+end note
+
+@enduml

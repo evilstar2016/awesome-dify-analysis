@@ -1,0 +1,240 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title 上下文组装流程 (Context Assembly)
+
+participant "对话管理器\nConversation" as Conv
+participant "检索器\nDealer" as Dealer
+participant "引用生成器\nCitationGen" as Citation
+participant "上下文格式化\nFormatter" as Formatter
+participant "Token 计数器\nTokenizer" as Tokenizer
+
+Conv -> Conv: 接收用户问题\nquestion = "如何配置 RAGFlow?"\ndialog_id = "dialog_uuid"\nconversation_id = "conv_uuid"
+activate Conv
+
+== 1. 执行检索 ==
+
+Conv -> Dealer: retrieval(\n  question=question,\n  kb_ids=kb_ids,\n  top_n=8,\n  similarity_threshold=0.2,\n  vector_similarity_weight=0.3,\n  rerank_mdl=reranker\n)
+activate Dealer
+
+note over Dealer
+执行混合检索 + 重排序
+(见前面的流程图)
+end note
+
+Dealer --> Conv: 返回检索结果\n{\n  "total": 42,\n  "chunks": [\n    {"chunk_id": "c1", "similarity": 0.85, ...},\n    {"chunk_id": "c2", "similarity": 0.78, ...},\n    ...(8个chunks)\n  ],\n  "doc_aggs": [...]\n}
+deactivate Dealer
+
+== 2. 分块选择与排序 ==
+
+Conv -> Conv: 选择最相关分块\nselected_chunks = chunks[:top_n]
+
+note over Conv
+已经经过重排序，
+直接使用 Top N 结果
+end note
+
+Conv -> Conv: 按相似度排序\nsorted_chunks = sorted(\n  selected_chunks,\n  key=lambda x: x["similarity"],\n  reverse=True\n)
+
+note over Conv
+确保最相关的内容优先
+end note
+
+== 3. 引用标注 ==
+
+loop 遍历每个分块
+
+    Conv -> Citation: 生成引用标记\nchunk_id = chunk["chunk_id"]\ndoc_name = chunk["docnm_kwd"]\npage_num = chunk.get("position_int", [[]])[0][0] if chunk.get("position_int") else None
+    activate Citation
+
+    alt 有页码信息
+
+        Citation -> Citation: 构建页码引用\ncitation = f"[{doc_name}, p.{page_num}]"
+
+    else 无页码信息
+
+        Citation -> Citation: 构建文档引用\ncitation = f"[{doc_name}]"
+
+    end
+
+    Citation -> Citation: 分配引用 ID\nchunk["citation_id"] = index + 1
+
+    Citation --> Conv: 返回引用信息\n{\n  "citation_id": 1,\n  "citation_text": "[配置指南.pdf, p.5]",\n  "doc_name": "配置指南.pdf",\n  "page": 5\n}
+    deactivate Citation
+
+    Conv -> Conv: citations.append(citation_info)
+
+end
+
+note over Conv
+引用列表：
+[1] 配置指南.pdf, p.5
+[2] 快速开始.md
+[3] API文档.pdf, p.12
+...
+end note
+
+== 4. 上下文长度控制 ==
+
+Conv -> Conv: 计算上下文窗口\nmax_tokens = llm_max_tokens * 0.7  # 预留输出空间
+
+note over Conv
+示例：
+- LLM 上下文: 8192 tokens
+- 预留给输出: 30%
+- 可用于上下文: 5734 tokens
+end note
+
+Conv -> Conv: 初始化累积 Tokens\ntotal_tokens = 0\nselected_contexts = []
+
+loop 遍历排序后的分块
+
+    Conv -> Tokenizer: tokenize(\n  text=chunk["content_with_weight"]\n)
+    activate Tokenizer
+
+    Tokenizer -> Tokenizer: 分词计数\ntokens = rag_tokenizer.tokenize(text)\ntoken_count = len(tokens.split())
+
+    Tokenizer --> Conv: token_count
+    deactivate Tokenizer
+
+    alt total_tokens + token_count <= max_tokens
+
+        Conv -> Conv: 添加该分块\nselected_contexts.append({\n  "content": chunk["content"],\n  "citation_id": chunk["citation_id"],\n  "tokens": token_count\n})
+
+        Conv -> Conv: total_tokens += token_count
+
+        note over Conv
+        累积使用的 Token 数
+        end note
+
+    else 超出 Token 限制
+
+        Conv -> Conv: 停止添加分块\nbreak
+
+        note over Conv
+        避免超出 LLM 上下文窗口
+        end note
+
+    end
+
+end
+
+note over Conv
+最终选中 5 个分块
+共使用 4800 tokens
+end note
+
+== 5. 格式化上下文 ==
+
+Conv -> Formatter: format_context(\n  contexts=selected_contexts,\n  citations=citations,\n  format="markdown"\n)
+activate Formatter
+
+alt Markdown 格式
+
+    Formatter -> Formatter: 构建 Markdown 上下文\ncontext = ""
+
+    loop 每个上下文分块
+
+        Formatter -> Formatter: 添加引用标记\ncontext += f"## 参考资料 [{citation_id}]\\n\\n"
+
+        Formatter -> Formatter: 添加内容\ncontext += chunk["content"] + "\\n\\n"
+
+        note over Formatter
+        Markdown 格式：
+        ## 参考资料 [1]
+        
+        RAGFlow 的配置文件位于...
+        
+        ## 参考资料 [2]
+        
+        首先需要安装依赖...
+        end note
+
+    end
+
+    Formatter -> Formatter: 添加引用列表\ncontext += "\\n---\\n\\n"
+    activate Formatter #LightBlue
+
+    Formatter -> Formatter: context += "## 引用来源\\n\\n"
+
+    loop 每个引用
+
+        Formatter -> Formatter: context += f"[{id}] {citation_text}\\n"
+
+    end
+
+    deactivate Formatter
+
+else JSON 格式
+
+    Formatter -> Formatter: 构建 JSON 上下文\ncontext = {\n  "contexts": [\n    {\n      "id": 1,\n      "content": "...",\n      "citation": "...",\n      "score": 0.85\n    },\n    ...\n  ],\n  "citations": [...],\n  "metadata": {...}\n}
+
+end
+
+Formatter --> Conv: 返回格式化上下文\nformatted_context
+deactivate Formatter
+
+== 6. 构建最终提示词 ==
+
+Conv -> Conv: 组装提示词模板\nsystem_prompt = get_system_prompt()
+
+note over Conv
+系统提示词：
+"你是一个专业的 AI 助手，
+请根据以下参考资料回答问题。
+如果引用了参考资料，
+请标注引用编号 [1]、[2]等。"
+end note
+
+Conv -> Conv: user_prompt = \n  f"参考资料：\\n{formatted_context}\\n\\n"\n  f"用户问题：{question}\\n\\n"\n  f"请基于以上参考资料回答问题。"
+
+note over Conv
+最终提示词结构：
+━━━━━━━━━━━━━━━
+[System]
+你是一个专业的 AI 助手...
+
+[User]
+参考资料：
+## 参考资料 [1]
+RAGFlow 的配置...
+
+## 参考资料 [2]
+首先需要安装...
+
+---
+## 引用来源
+[1] 配置指南.pdf, p.5
+[2] 快速开始.md
+
+用户问题：如何配置 RAGFlow?
+━━━━━━━━━━━━━━━
+end note
+
+== 7. 返回组装结果 ==
+
+Conv -> Conv: 返回上下文数据\nreturn {\n  "context": formatted_context,\n  "chunks": selected_contexts,\n  "citations": citations,\n  "prompt": user_prompt,\n  "token_count": total_tokens,\n  "metadata": {\n    "total_chunks": len(chunks),\n    "selected_chunks": len(selected_contexts),\n    "truncated": is_truncated\n  }\n}
+
+deactivate Conv
+
+note over Conv
+上下文组装完成：
+✓ 选择最相关分块
+✓ 添加引用标注
+✓ 控制 Token 长度
+✓ 格式化输出
+✓ 构建提示词模板
+end note
+
+@enduml

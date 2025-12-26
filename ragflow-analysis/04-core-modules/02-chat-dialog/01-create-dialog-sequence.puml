@@ -1,0 +1,168 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title 创建对话流程 (Create Dialog)
+
+actor 用户
+participant "前端界面\nReact App" as Frontend
+participant "Nginx\n反向代理" as Nginx
+participant "API 服务\ndialog_app.py" as API
+participant "对话服务\nDialogService" as DialogSvc
+participant "知识库服务\nKBService" as KBSvc
+database "MySQL" as DB
+
+用户 -> Frontend: 点击"新建对话"
+activate Frontend
+
+Frontend -> Frontend: 打开对话配置表单
+
+用户 -> Frontend: 填写对话配置\n- 对话名称\n- 选择知识库\n- 选择 LLM 模型\n- 配置参数
+
+Frontend -> Nginx: POST /api/v1/dialog/set\nAuthorization: Bearer {token}\n{\n  "name": "技术支持对话",\n  "kb_ids": ["kb_uuid1"],\n  "llm_id": "llm_uuid",\n  "llm_setting": {...}\n}
+activate Nginx
+
+Nginx -> API: 转发请求
+activate API
+
+== 1. 身份验证 ==
+
+API -> API: 验证 JWT Token\nget_jwt_identity()
+
+alt Token 无效
+    API --> Frontend: 401 Unauthorized\n{"code": 401, "message": "Invalid token"}
+    Frontend --> 用户: 显示"请重新登录"
+else Token 有效
+    API -> API: 提取用户信息\nuser_id, tenant_id
+end
+
+== 2. 参数验证 ==
+
+API -> API: 验证必填参数\nrequired: name, kb_ids, llm_id
+
+alt 参数缺失
+    API --> Frontend: 400 Bad Request\n{"code": 400, "message": "Missing required fields"}
+    Frontend --> 用户: 显示错误提示
+else 参数完整
+    API -> API: 参数合法性检查\n- name 长度 <= 128\n- kb_ids 非空数组\n- llm_id 格式正确
+end
+
+== 3. 知识库权限校验 ==
+
+loop 每个知识库 ID
+    API -> KBSvc: get_by_id(kb_id)
+    activate KBSvc
+    
+    KBSvc -> DB: SELECT * FROM knowledgebase\nWHERE id = ? AND tenant_id = ?
+    activate DB
+    DB --> KBSvc: 返回知识库记录
+    deactivate DB
+    
+    alt 知识库不存在或无权限
+        KBSvc --> API: None
+        API --> Frontend: 403 Forbidden\n{"code": 403, "message": "KB not accessible"}
+        Frontend --> 用户: 显示"无知识库访问权限"
+    else 知识库可访问
+        KBSvc --> API: Knowledgebase 对象
+    end
+    
+    deactivate KBSvc
+end
+
+== 4. 创建对话 ==
+
+API -> API: 生成对话 UUID\ndialog_id = get_uuid()
+
+API -> API: 设置默认配置\ndefault_llm_setting = {\n  "temperature": 0.7,\n  "top_p": 0.9,\n  "max_tokens": 2048\n}\ndefault_prompt_config = {\n  "system": "...",\n  "quote": true\n}
+
+API -> DialogSvc: save(\n  id=dialog_id,\n  name=name,\n  tenant_id=tenant_id,\n  kb_ids=kb_ids,\n  llm_id=llm_id,\n  llm_setting=llm_setting,\n  similarity_threshold=0.2,\n  vector_similarity_weight=0.3,\n  top_k=1024,\n  top_n=8,\n  status='active'\n)
+activate DialogSvc
+
+DialogSvc -> DB: INSERT INTO dialog\n(id, name, tenant_id, kb_ids, ...)\nVALUES (?, ?, ?, ?, ...)
+activate DB
+
+alt 数据库错误
+    DB --> DialogSvc: IntegrityError / OperationalError
+    DialogSvc --> API: 抛出异常
+    API --> Frontend: 500 Internal Server Error\n{"code": 500, "message": "Database error"}
+    Frontend --> 用户: 显示"创建失败，请重试"
+else 插入成功
+    DB --> DialogSvc: 插入成功\nrows_affected = 1
+    deactivate DB
+end
+
+DialogSvc -> DB: SELECT * FROM dialog\nWHERE id = ?
+activate DB
+DB --> DialogSvc: 返回完整对话记录
+deactivate DB
+
+DialogSvc --> API: Dialog 对象
+deactivate DialogSvc
+
+== 5. 返回结果 ==
+
+API -> API: 构建响应数据\nresponse = {\n  "id": dialog.id,\n  "name": dialog.name,\n  "kb_ids": dialog.kb_ids,\n  "llm_id": dialog.llm_id,\n  "create_time": dialog.create_time\n}
+
+API --> Nginx: 200 OK\n{\n  "code": 0,\n  "data": {dialog},\n  "message": "success"\n}
+deactivate API
+
+Nginx --> Frontend: 返回响应
+deactivate Nginx
+
+Frontend -> Frontend: 更新对话列表\ndialogs.push(new_dialog)
+
+Frontend -> Frontend: 跳转到对话界面\nnavigate(`/chat/${dialog_id}`)
+
+Frontend --> 用户: 显示"对话创建成功"\n进入对话界面
+deactivate Frontend
+
+note right of API
+  可配置参数：
+  - llm_setting
+    * temperature (0-2)
+    * top_p (0-1)
+    * max_tokens
+    * presence_penalty
+    * frequency_penalty
+  
+  - prompt_config
+    * system (系统提示词)
+    * prologue (开场白)
+    * quote (是否引用)
+    * empty_response
+  
+  - 检索参数
+    * similarity_threshold
+    * vector_similarity_weight
+    * top_k
+    * top_n
+    * rerank_id
+end note
+
+note left of DB
+  Dialog 表结构：
+  - id (STRING, PK)
+  - name (STRING)
+  - tenant_id (STRING, FK)
+  - kb_ids (JSON)
+  - llm_id (STRING)
+  - llm_setting (JSON)
+  - prompt_config (JSON)
+  - similarity_threshold (FLOAT)
+  - top_k (INT)
+  - top_n (INT)
+  - status (ENUM)
+  - create_time (DATETIME)
+end note
+
+@enduml

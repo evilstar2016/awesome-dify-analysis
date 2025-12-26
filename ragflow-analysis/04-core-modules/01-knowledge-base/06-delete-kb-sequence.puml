@@ -1,0 +1,77 @@
+@startuml 知识库删除流程
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+actor "用户" as User
+participant "kb_app.rm" as API
+participant "DocumentService" as DocService
+participant "FileService" as FileService
+database "MySQL" as DB
+participant "Elasticsearch" as ES
+participant "MinIO" as MinIO
+
+User -> API: POST /api/v1/kb/rm
+activate API
+
+API -> API: 权限验证
+note right of API
+  仅创建者可删除
+end note
+
+API -> DocService: query(kb_id)
+activate DocService
+
+loop 每个文档
+    DocService -> DocService: remove_document()
+    DocService -> ES: 删除分块索引
+    activate ES
+    ES --> DocService: 删除完成
+    deactivate ES
+    
+    DocService -> FileService: 删除文件记录
+    activate FileService
+    FileService -> MinIO: 删除对象
+    activate MinIO
+    MinIO --> FileService: 删除完成
+    deactivate MinIO
+    FileService --> DocService: 删除完成
+    deactivate FileService
+end
+
+deactivate DocService
+
+API -> DB: delete_by_id(kb_id)
+activate DB
+DB --> API: 删除成功
+deactivate DB
+
+API -> ES: deleteIdx(index_name)
+activate ES
+note right of ES
+  删除整个索引
+end note
+ES --> API: 删除成功
+deactivate ES
+
+API -> MinIO: remove_bucket(kb_id)
+activate MinIO
+note right of MinIO
+  删除存储桶
+end note
+MinIO --> API: 删除成功
+deactivate MinIO
+
+API --> User: 200 OK
+deactivate API
+
+@enduml

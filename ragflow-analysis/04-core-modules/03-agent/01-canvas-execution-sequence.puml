@@ -1,0 +1,187 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title Canvas 执行流程 (Canvas Execution)
+
+actor 用户
+participant "前端界面\nReact" as Frontend
+participant "API 服务\ncanvas_app.py" as API
+participant "Canvas\n执行引擎" as Canvas
+participant "Graph\nDAG 图" as Graph
+participant "组件\nComponent" as Component
+participant "LLM 服务\nChatModel" as LLM
+database "MySQL" as DB
+participant "Redis\n任务队列" as Redis
+
+用户 -> Frontend: 点击运行 Canvas\n输入: "分析销售数据"
+activate Frontend
+
+Frontend -> API: POST /api/v1/canvas/{canvas_id}/run\n{\n  "query": "分析销售数据",\n  "stream": true\n}
+activate API
+
+== 1. 加载 Canvas 配置 ==
+
+API -> DB: SELECT * FROM canvas\nWHERE id = ? AND tenant_id = ?
+activate DB
+DB --> API: Canvas 记录\n{id, name, dsl, ...}
+deactivate DB
+
+API -> API: 解析 DSL\ndsl = json.loads(canvas.dsl)
+
+== 2. 初始化执行环境 ==
+
+API -> Canvas: run(\n  dsl=dsl,\n  query=query,\n  stream=True\n)
+activate Canvas
+
+Canvas -> Canvas: 初始化全局变量\nglobals = {\n  "sys.query": query,\n  "sys.user_id": user_id,\n  "sys.conversation_turns": 0,\n  "sys.files": []\n}
+
+Canvas -> Canvas: 提取组件定义\ncomponents = dsl["components"]
+
+Canvas -> Graph: 构建执行图\ngraph = Graph(components)
+activate Graph
+
+Graph -> Graph: 解析组件依赖\nfor comp_id, comp_def in components:\n  upstream = comp_def["upstream"]\n  downstream = comp_def["downstream"]
+
+Graph -> Graph: 拓扑排序\nexecution_order = topological_sort(\n  components\n)
+
+Graph --> Canvas: 返回执行顺序\n["begin", "llm_0", "switch_0", ...]
+deactivate Graph
+
+== 3. 流式执行组件 ==
+
+loop 按拓扑顺序执行每个组件
+    Canvas -> Canvas: 获取下一个组件\ncomp_id = execution_order.pop(0)\ncomp_def = components[comp_id]
+    
+    Canvas -> Canvas: 实例化组件\nComponentClass = component_class[\n  comp_def["obj"]["component_name"]\n]\ncomponent = ComponentClass(\n  comp_id,\n  comp_def["obj"]["params"]\n)
+    
+    Canvas -> Canvas: 准备输入参数\ninputs = resolve_variables(\n  comp_def["obj"]["params"],\n  globals\n)
+    
+    Canvas -> API: yield 执行事件\n{\n  "component_id": comp_id,\n  "component_name": "LLM",\n  "event": "running",\n  "elapsed_time": 1.2\n}
+    
+    API --> Frontend: SSE Push\ndata: {"component_id": "llm_0", "event": "running"}
+    
+    Frontend -> Frontend: 更新 Canvas 界面\n高亮当前执行节点
+    
+    Frontend --> 用户: 显示执行状态\n"LLM 组件正在运行..."
+    
+    Canvas -> Component: run(\n  history=globals["history"],\n  **inputs\n)
+    activate Component
+    
+    alt 组件类型 = LLM
+        Component -> Component: 构建提示词\nprompt = render_template(\n  template=params["prompt"],\n  variables=globals\n)
+        
+        Component -> LLM: chat(\n  messages=[{"role": "user", "content": prompt}],\n  stream=False\n)
+        activate LLM
+        LLM --> Component: 返回答案\n{"content": "销售分析结果..."}
+        deactivate LLM
+        
+        Component -> Component: 保存输出\noutput = {"result": content}
+        
+    else 组件类型 = Switch
+        Component -> Component: 评估条件\ncondition_value = globals[params["condition"]]
+        
+        Component -> Component: 选择分支\nnext_branch = params["cases"][condition_value]
+        
+        Component -> Component: 更新执行路径\noutput = {"next": next_branch}
+        
+    else 组件类型 = Loop
+        Component -> Component: 遍历列表\nitems = globals[params["items"]]\nfor item in items:\n  execute_loop_body(item)
+        
+        Component -> Component: 聚合结果\noutput = {"results": aggregated_results}
+    end
+    
+    Component --> Canvas: 返回组件输出\n{\n  "output": {...},\n  "next_components": [...]\n}
+    deactivate Component
+    
+    Canvas -> Canvas: 更新全局变量\nglobals[comp_id + ".output"] = output\nglobals["history"].append({\n  "component_id": comp_id,\n  "output": output\n})
+    
+    Canvas -> API: yield 完成事件\n{\n  "component_id": comp_id,\n  "event": "completed",\n  "content": output,\n  "elapsed_time": 2.5\n}
+    
+    API --> Frontend: SSE Push\ndata: {"component_id": "llm_0", "event": "completed", "content": "..."}
+    
+    Frontend -> Frontend: 显示组件输出\n在节点上显示结果预览
+    
+    Frontend --> 用户: 实时显示结果\n"销售分析结果..."
+    
+    alt 有条件分支
+        Canvas -> Canvas: 动态调整执行路径\nif output["next"]:\n  execution_order.insert(0, output["next"])
+    end
+    
+    alt 组件执行失败
+        Component --> Canvas: 抛出异常\nComponentExecutionError
+        
+        Canvas -> Canvas: 错误处理\nerror_msg = capture_exception()
+        
+        Canvas -> API: yield 错误事件\n{\n  "component_id": comp_id,\n  "event": "error",\n  "error": error_msg\n}
+        
+        API --> Frontend: SSE Push\ndata: {"event": "error", "error": "..."}
+        
+        Frontend --> 用户: 显示错误提示\n"组件执行失败: ..."
+    end
+end
+
+== 4. 完成执行 ==
+
+Canvas -> Canvas: 提取最终结果\nfinal_output = globals["last_component.output"]
+
+Canvas -> Canvas: 保存执行历史\nexecution_history = {\n  "trace": globals["history"],\n  "final_output": final_output\n}
+
+Canvas -> Redis: 保存执行记录\nSET canvas:execution:{task_id}\n  execution_history
+activate Redis
+Redis --> Canvas: 保存成功
+deactivate Redis
+
+Canvas --> API: 返回最终结果\n{\n  "status": "completed",\n  "output": final_output,\n  "trace": execution_history\n}
+deactivate Canvas
+
+API --> Frontend: SSE Push\ndata: {"event": "done", "output": {...}}\ndata: [DONE]
+deactivate API
+
+Frontend -> Frontend: 显示完成状态\n- 所有节点变为绿色\n- 显示最终输出\n- 显示执行统计
+
+Frontend --> 用户: 展示分析结果\n+ 执行时间\n+ Token 消耗
+deactivate Frontend
+
+note right of Canvas
+  拓扑排序算法：
+  1. 找出所有入度为 0 的节点
+  2. 移除节点及其出边
+  3. 重复直到所有节点处理完
+  
+  确保执行顺序符合依赖关系
+end note
+
+note right of Component
+  组件生命周期：
+  1. 初始化 __init__()
+  2. 参数验证 validate()
+  3. 执行逻辑 _run()
+  4. 输出处理 format_output()
+  5. 清理资源 cleanup()
+end note
+
+note left of Redis
+  执行状态存储：
+  - 当前执行节点
+  - 全局变量快照
+  - 执行历史
+  - 错误信息
+  
+  支持：
+  - 断点恢复
+  - 执行回放
+  - 性能分析
+end note
+
+@enduml

@@ -1,0 +1,128 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title 向量检索流程 (Vector Search)
+
+actor 用户
+participant "对话模块\nRAGChat" as Chat
+participant "检索器\nRetrieval" as Retrieval
+participant "嵌入服务\nEmbedding" as Embed
+participant "Elasticsearch/\nInfinity" as ES
+participant "重排序器\nReranker" as Rerank
+database "MySQL" as DB
+
+用户 -> Chat: 提问\n"如何使用 RAGFlow?"
+activate Chat
+
+Chat -> Retrieval: retrieve(\n  query="如何使用 RAGFlow?",\n  kb_ids=["kb_uuid1", "kb_uuid2"],\n  top_k=10\n)
+activate Retrieval
+
+== 1. 向量检索 ==
+
+Retrieval -> Embed: 查询编码\nembed_query(query)
+activate Embed
+Embed -> Embed: 调用嵌入模型\n(text-embedding-3-large)
+Embed --> Retrieval: 返回查询向量\n[0.1, 0.2, ..., 0.3] (1536维)
+deactivate Embed
+
+Retrieval -> ES: 向量相似度搜索\nPOST /ragflow_chunks/_search\n{\n  "knn": {\n    "embedding": query_vector,\n    "k": 20\n  },\n  "filter": {"terms": {"kb_id": kb_ids}}\n}
+activate ES
+
+ES -> ES: 计算余弦相似度\nfor each chunk:\n  score = cosine(query_vec, chunk_vec)
+
+ES -> ES: TopK 排序\nsort by score DESC\nlimit 20
+
+ES --> Retrieval: 返回相似分块\n[\n  {chunk, score: 0.85},\n  {chunk, score: 0.78},\n  ...\n]
+deactivate ES
+
+== 2. 全文检索 ==
+
+Retrieval -> ES: 全文搜索 (BM25)\nPOST /ragflow_chunks/_search\n{\n  "query": {\n    "match": {"content": query}\n  },\n  "size": 20\n}
+activate ES
+
+ES -> ES: BM25 评分\nTF-IDF + 文档长度归一化
+
+ES --> Retrieval: 返回匹配分块\n[{chunk, score: 2.5}, ...]
+deactivate ES
+
+== 3. 结果融合 ==
+
+Retrieval -> Retrieval: RRF 融合排序\nfor results in [vector_results, bm25_results]:\n  for rank, chunk in enumerate(results):\n    score[chunk_id] += 1/(60+rank)
+
+Retrieval -> Retrieval: 按融合分数排序\nsorted_chunks = sort(chunks, by=score, desc)
+
+Retrieval -> Retrieval: 截断 TopK\nfinal_chunks = sorted_chunks[:10]
+
+== 4. 重排序 ==
+
+Retrieval -> Rerank: rerank(\n  query=query,\n  chunks=final_chunks\n)
+activate Rerank
+
+loop 每个分块
+    Rerank -> Rerank: 计算相关性分数\nscore = model.score(\n  query_text=query,\n  passage_text=chunk.content\n)
+end
+
+Rerank -> Rerank: 按分数重新排序\nreranked_chunks = sort(chunks, by=score, desc)
+
+Rerank --> Retrieval: 返回重排序结果\n[{chunk, rerank_score: 0.92}, ...]
+deactivate Rerank
+
+Retrieval -> DB: 记录检索日志\nINSERT INTO retrieval_log\nVALUES (query, kb_ids, result_count, ...)
+activate DB
+DB --> Retrieval: 记录成功
+deactivate DB
+
+Retrieval --> Chat: 返回最终结果\n[\n  {content, doc_name, score, img_id},\n  ...\n]
+deactivate Retrieval
+
+== 5. 上下文组装 ==
+
+Chat -> Chat: 构建提示词\ncontext = format_chunks(chunks)\nprompt = f'''\n基于以下内容回答问题：\n{context}\n\n问题：{query}\n回答：\n'''
+
+Chat -> Chat: 调用 LLM\nanswer = llm.chat(prompt)
+
+Chat --> 用户: 返回答案 + 引用\n{\n  "answer": "RAGFlow 使用步骤...",\n  "references": [\n    {doc_name, page, content}\n  ]\n}
+deactivate Chat
+
+note right of ES
+  向量搜索优化：
+  - HNSW 索引
+  - IVF + PQ 量化
+  - 批量搜索
+  - 缓存热点查询
+end note
+
+note right of Retrieval
+  RRF 融合公式：
+  score(d) = Σ 1/(k + rank_i(d))
+  
+  其中：
+  - k = 60 (常数)
+  - rank_i(d) 是文档 d 在
+    第 i 个结果列表中的排名
+end note
+
+note left of Rerank
+  重排模型：
+  - BGE Reranker
+  - Cohere Rerank
+  - LLM Rerank
+  
+  特点：
+  - Cross-Encoder 架构
+  - 更精准的相关性评分
+  - 计算成本高
+end note
+
+@enduml
