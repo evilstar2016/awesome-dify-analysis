@@ -1,0 +1,118 @@
+@startuml FastGPT App Create Sequence
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title FastGPT 应用创建流程时序图
+
+actor 用户 as User
+participant "前端\nFrontend" as FE
+participant "API路由\n/api/core/app/create" as API
+participant "权限验证\nAuth" as Auth
+participant "应用服务\nApp Service" as App
+participant "工作流服务\nWorkflow" as WF
+database "MongoDB" as DB
+
+== 选择应用类型 ==
+
+User -> FE: 点击创建应用
+activate FE
+
+FE -> User: 显示应用类型选择
+User -> FE: 选择类型(simple/agent/workflow)
+
+== 配置应用 ==
+
+alt Simple应用
+  FE -> User: 显示简单配置
+  User -> FE: 配置AI模型和Prompt
+else Agent应用
+  FE -> User: 显示Agent配置
+  User -> FE: 配置模型、工具、Prompt
+else Workflow应用
+  FE -> User: 显示工作流编辑器
+  User -> FE: 拖拽配置节点和边
+end
+
+User -> FE: 点击保存
+
+== 创建应用 ==
+
+FE -> API: POST /api/core/app/create
+activate API
+note right of API
+  {
+    name: "应用名称",
+    type: "simple/agent/workflow",
+    modules: [...节点],
+    edges: [...边],
+    chatConfig: {...}
+  }
+end note
+
+API -> Auth: 验证权限
+activate Auth
+Auth --> API: 验证通过
+deactivate Auth
+
+API -> App: 创建应用
+activate App
+
+App -> App: 格式化应用数据
+App -> App: 处理工作流节点
+
+App -> DB: 插入apps记录
+activate DB
+DB --> App: 返回_id
+deactivate DB
+
+alt 有默认版本
+  App -> DB: 创建初始版本
+  DB --> App: 版本创建成功
+end
+
+App --> API: 应用创建成功
+deactivate App
+
+API --> FE: 返回应用ID
+deactivate API
+
+FE --> User: 跳转到应用详情
+deactivate FE
+
+== 编辑工作流 ==
+
+User -> FE: 编辑工作流
+activate FE
+
+FE -> User: 显示工作流编辑器
+User -> FE: 修改节点配置
+User -> FE: 点击保存草稿
+
+FE -> API: PUT /api/core/app/update
+activate API
+
+API -> App: 更新应用
+activate App
+App -> DB: 更新modules和edges
+DB --> App: 更新完成
+App --> API: 更新成功
+deactivate App
+
+API --> FE: 保存成功
+deactivate API
+
+FE --> User: 提示已保存
+deactivate FE
+
+@enduml

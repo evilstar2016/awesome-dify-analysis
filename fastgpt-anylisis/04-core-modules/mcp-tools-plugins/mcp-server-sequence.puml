@@ -1,0 +1,314 @@
+@startuml MCP服务端处理时序图
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+actor "外部MCP客户端" as ExternalClient
+participant "MCP Server\n(Express/Next.js)" as Server
+participant "getMcpServerTools" as GetTools
+participant "callMcpServerTool" as CallTool
+database "MongoMcpKey" as McpKeyDB
+database "MongoApp" as AppDB
+participant "权限验证" as Auth
+participant "版本控制" as Version
+participant "Schema转换" as SchemaConverter
+participant "工作流引擎" as Workflow
+participant "聊天记录" as ChatDB
+
+== 服务初始化阶段 ==
+
+ExternalClient -> Server: 连接 MCP 服务
+activate Server
+
+alt SSE传输模式
+  Server -> Server: 创建 SSEServerTransport
+  note right
+    GET /:key/sse
+    建立 Server-Sent Events 连接
+  end note
+else HTTP Streamable模式
+  Server -> Server: 创建 StreamableHTTPServerTransport
+  note right
+    POST /mcp/app/:key/mcp
+    支持 HTTP 流式传输
+  end note
+end
+
+Server -> Server: 创建 MCP Server实例
+note right
+  Server({
+    name: 'fastgpt-mcp-server',
+    version: '1.0.0',
+    capabilities: { tools: {} }
+  })
+end note
+
+Server -> Server: 注册请求处理器
+note right
+  - ListToolsRequestSchema
+  - CallToolRequestSchema
+end note
+
+== 获取工具列表流程 ==
+
+ExternalClient -> Server: ListTools Request
+note right
+  请求获取可用工具列表
+end note
+
+Server -> GetTools: getMcpServerTools(key)
+activate GetTools
+
+GetTools -> McpKeyDB: findOne({ key })
+activate McpKeyDB
+McpKeyDB --> GetTools: 返回 MCP 密钥配置
+deactivate McpKeyDB
+
+alt 密钥不存在
+  GetTools --> Server: 返回错误 (invalidResource)
+  Server --> ExternalClient: 返回错误响应
+else 密钥有效
+  GetTools -> AppDB: 查询关联的应用列表
+  activate AppDB
+  note right
+    find({
+      _id: { $in: mcp.apps.map(app => app.appId) },
+      type: { $in: [simple, workflow, workflowTool] }
+    })
+  end note
+  AppDB --> GetTools: 返回应用列表
+  deactivate AppDB
+  
+  loop 遍历每个应用
+    GetTools -> Auth: authAppByTmbId(tmbId, appId, ReadPermission)
+    activate Auth
+    
+    alt 有权限
+      Auth --> GetTools: 验证通过
+    else 无权限
+      Auth --> GetTools: 验证失败
+      note right
+        过滤掉无权限的应用
+      end note
+    end
+    deactivate Auth
+  end
+  
+  loop 遍历有权限的应用
+    GetTools -> Version: getAppLatestVersion(appId, app)
+    activate Version
+    Version --> GetTools: 返回最新版本配置
+    deactivate Version
+    
+    GetTools -> SchemaConverter: 转换为 MCP Tool Schema
+    activate SchemaConverter
+    
+    alt 插件类型应用
+      SchemaConverter -> SchemaConverter: pluginNodes2InputSchema(nodes)
+      note right
+        从 pluginInput 节点提取参数
+        转换为 JSON Schema
+      end note
+    else 工作流类型应用
+      SchemaConverter -> SchemaConverter: workflow2InputSchema(chatConfig)
+      note right
+        基于 chatConfig 生成 Schema
+        包含 question 和自定义变量
+      end note
+    end
+    
+    SchemaConverter --> GetTools: 返回 inputSchema
+    deactivate SchemaConverter
+  end
+  
+  GetTools -> GetTools: 构建 Tool[] 数组
+  note right
+    tools = [{
+      name: mcpApp.toolName,
+      description: mcpApp.description,
+      inputSchema: { type, properties, required }
+    }, ...]
+  end note
+  
+  GetTools --> Server: 返回 Tool[] 列表
+end
+
+deactivate GetTools
+
+Server --> ExternalClient: 返回工具列表
+deactivate Server
+
+== 调用工具流程 ==
+
+ExternalClient -> Server: CallTool Request
+activate Server
+note right
+  {
+    name: toolName,
+    arguments: { param1, param2, ... }
+  }
+end note
+
+Server -> CallTool: callMcpServerTool({ key, toolName, inputs })
+activate CallTool
+
+CallTool -> McpKeyDB: findOne({ key })
+activate McpKeyDB
+McpKeyDB --> CallTool: 返回 MCP 配置
+deactivate McpKeyDB
+
+CallTool -> AppDB: 查找对应的应用
+activate AppDB
+note right
+  根据 toolName 匹配
+  mcp.apps.find(app => app.toolName === toolName)
+end note
+AppDB --> CallTool: 返回应用实例
+deactivate AppDB
+
+CallTool -> Version: getAppLatestVersion(appId, app)
+activate Version
+Version --> CallTool: 返回最新版本(nodes, edges, chatConfig)
+deactivate Version
+
+CallTool -> CallTool: 构建用户查询
+note right
+  if (isPlugin):
+    serverGetWorkflowToolRunUserQuery({
+      pluginInputs,
+      variables: inputs
+    })
+  else:
+    {
+      obj: ChatRoleEnum.Human,
+      value: [{ type: text, text: { content: inputs.question } }]
+    }
+end note
+
+CallTool -> CallTool: 准备运行时配置
+note right
+  - storeNodes2RuntimeNodes()
+  - storeEdges2RuntimeEdges()
+  - 注入变量和系统参数
+end note
+
+CallTool -> Workflow: dispatchWorkFlow(runtimeConfig)
+activate Workflow
+
+note right of Workflow
+  执行工作流配置:
+  - mode: 'chat'
+  - usageSource: UsageSourceEnum.mcp
+  - runtimeNodes
+  - runtimeEdges
+  - variables
+  - query
+  - chatConfig
+  - histories: []
+  - stream: false
+end note
+
+Workflow -> Workflow: 执行工作流节点链
+note right
+  按照节点连接关系依次执行
+  - 条件判断
+  - 工具调用
+  - AI 对话
+  - 数据处理
+  等节点
+end note
+
+Workflow --> CallTool: 返回执行结果
+deactivate Workflow
+note right
+  {
+    flowUsages,
+    assistantResponses,
+    newVariables,
+    flowResponses,
+    durationSeconds,
+    system_memories
+  }
+end note
+
+CallTool -> CallTool: 构建 AI 响应
+note right
+  aiResponse = {
+    obj: ChatRoleEnum.AI,
+    value: assistantResponses,
+    nodeResponse: flowResponses,
+    memories: system_memories
+  }
+end note
+
+CallTool -> ChatDB: saveChat(chatRecord)
+activate ChatDB
+note right
+  保存完整对话记录:
+  - chatId
+  - source: ChatSourceEnum.mcp
+  - userContent
+  - aiContent
+  - variables
+  - durationSeconds
+end note
+ChatDB --> CallTool: 保存成功
+deactivate ChatDB
+
+CallTool -> CallTool: 格式化返回结果
+note right
+  if (isPlugin):
+    找到 pluginOutput 节点
+    返回 JSON.stringify(output.pluginOutput)
+  else:
+    合并所有 assistantResponses
+    返回文本内容
+    
+  最后移除引用标记:
+  removeDatasetCiteText(responseContent)
+end note
+
+CallTool --> Server: 返回格式化结果
+deactivate CallTool
+
+Server --> ExternalClient: 返回工具执行结果
+deactivate Server
+note right
+  {
+    content: [{
+      type: 'text',
+      text: responseContent
+    }],
+    isError: false
+  }
+end note
+
+== 错误处理流程 ==
+
+alt 发生错误
+  CallTool -> CallTool: catch (error)
+  note right
+    捕获任何执行错误
+  end note
+  
+  CallTool --> Server: 返回错误信息
+  Server --> ExternalClient: 错误响应
+  note right
+    {
+      message: getErrText(error),
+      content: [],
+      isError: true
+    }
+  end note
+end
+
+@enduml

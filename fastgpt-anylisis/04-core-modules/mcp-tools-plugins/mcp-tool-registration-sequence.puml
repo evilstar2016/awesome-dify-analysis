@@ -1,0 +1,294 @@
+@startuml MCP工具注册与发现时序图
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+actor "用户" as User
+participant "前端应用" as Frontend
+participant "工具控制器" as ToolController
+participant "MCPClient" as Client
+participant "外部MCP服务" as ExternalMCP
+database "应用数据库" as AppDB
+participant "运行时转换器" as RuntimeConverter
+
+== 场景1: 注册外部MCP工具集 ==
+
+User -> Frontend: 创建MCP工具集应用
+activate Frontend
+
+Frontend -> Frontend: 输入MCP服务信息
+note right
+  - 服务名称
+  - MCP服务 URL
+  - 认证Headers
+end note
+
+Frontend -> ToolController: 保存工具集配置
+activate ToolController
+
+ToolController -> Client: new MCPClient(url, headers)
+activate Client
+note right
+  创建临时客户端
+  用于获取工具列表
+end note
+
+Client -> ExternalMCP: getTools()
+activate ExternalMCP
+note right
+  连接外部MCP服务
+  请求工具列表
+end note
+
+ExternalMCP -> ExternalMCP: 处理 ListTools 请求
+ExternalMCP --> Client: 返回 Tool[] 列表
+deactivate ExternalMCP
+
+Client --> ToolController: 返回工具配置列表
+deactivate Client
+note right
+  [
+    {
+      name: "toolName",
+      description: "...",
+      inputSchema: { type, properties, required }
+    },
+    ...
+  ]
+end note
+
+ToolController -> AppDB: 创建 MCP 工具集应用
+activate AppDB
+note right
+  {
+    type: AppTypeEnum.mcpToolSet,
+    name: "工具集名称",
+    modules: [{
+      flowNodeType: FlowNodeTypeEnum.toolSet,
+      toolConfig: {
+        mcpToolSet: {
+          url: "...",
+          headerSecret: {...},
+          toolList: [...],
+          toolId: appId
+        }
+      }
+    }]
+  }
+end note
+AppDB --> ToolController: 保存成功，返回 appId
+deactivate AppDB
+
+ToolController --> Frontend: 返回工具集创建结果
+deactivate ToolController
+
+Frontend --> User: 显示工具集已创建
+deactivate Frontend
+
+== 场景2: 在工作流中使用MCP工具 ==
+
+User -> Frontend: 编辑工作流
+activate Frontend
+
+Frontend -> ToolController: 获取可用工具列表
+activate ToolController
+
+ToolController -> AppDB: 查询用户可访问的工具
+activate AppDB
+note right
+  查询条件:
+  - 团队权限
+  - 应用类型 (包括 mcpToolSet)
+  - 协作权限
+end note
+
+AppDB --> ToolController: 返回应用列表
+deactivate AppDB
+
+loop 遍历 MCP 工具集
+  ToolController -> ToolController: getMCPChildren(mcpToolSetApp)
+  activate ToolController
+  
+  note right
+    提取工具列表:
+    if (isNewMcp):
+      从 toolConfig.mcpToolSet.toolList 获取
+    else:
+      从子应用中获取 (兼容旧版)
+  end note
+  
+  ToolController -> ToolController: 生成工具 ID
+  note right
+    格式: mcp-{parentId}/{toolName}
+    例如: mcp-64f1a2b3c4d5/getCurrentWeather
+  end note
+  
+  ToolController --> ToolController: 返回工具列表
+  deactivate ToolController
+end
+
+ToolController --> Frontend: 返回完整工具列表
+deactivate ToolController
+note right
+  包含:
+  - 系统工具
+  - HTTP工具
+  - MCP工具
+  - 工作流工具
+end note
+
+Frontend -> Frontend: 显示工具列表
+Frontend --> User: 用户选择MCP工具
+
+User -> Frontend: 拖拽MCP工具到画布
+Frontend -> RuntimeConverter: getMCPToolRuntimeNode(tool, parentId)
+activate RuntimeConverter
+
+RuntimeConverter -> RuntimeConverter: 转换为运行时节点
+note right
+  {
+    nodeId: getNanoid(),
+    flowNodeType: FlowNodeTypeEnum.tool,
+    avatar: 'core/app/type/mcpToolsFill',
+    intro: tool.description,
+    toolConfig: {
+      mcpTool: {
+        toolId: 'mcp-{parentId}/{toolName}'
+      }
+    },
+    inputs: jsonSchema2NodeInput({
+      jsonSchema: tool.inputSchema,
+      schemaType: 'mcp'
+    }),
+    outputs: [{ key: 'rawResponse', ... }]
+  }
+end note
+
+RuntimeConverter --> Frontend: 返回工作流节点配置
+deactivate RuntimeConverter
+
+Frontend -> Frontend: 添加节点到工作流
+Frontend --> User: 显示已添加的工具节点
+deactivate Frontend
+
+== 场景3: 工作流执行时解析MCP工具 ==
+
+User -> Frontend: 触发工作流执行
+activate Frontend
+
+Frontend -> ToolController: 执行工作流
+activate ToolController
+
+ToolController -> ToolController: 遍历工作流节点
+
+alt 遇到 MCP 工具集节点
+  ToolController -> ToolController: 检测 toolConfig.mcpToolSet
+  
+  ToolController -> ToolController: 展开为多个工具节点
+  activate ToolController
+  
+  loop 遍历 toolList
+    ToolController -> RuntimeConverter: getMCPToolRuntimeNode(tool, parentId)
+    activate RuntimeConverter
+    
+    RuntimeConverter -> RuntimeConverter: 生成运行时工具节点
+    note right
+      每个工具都成为独立的
+      可执行节点
+    end note
+    
+    RuntimeConverter --> ToolController: 返回工具节点
+    deactivate RuntimeConverter
+  end
+  
+  ToolController --> ToolController: 返回展开后的节点列表
+  deactivate ToolController
+  
+else 遇到 MCP 工具节点
+  ToolController -> ToolController: 检测 toolConfig.mcpTool.toolId
+  
+  ToolController -> ToolController: 解析工具 ID
+  note right
+    splitCombineToolId(toolId)
+    提取: source, pluginId
+    
+    pluginId 格式: {parentId}/{toolName}
+  end note
+  
+  ToolController -> AppDB: 获取父工具集配置
+  activate AppDB
+  AppDB --> ToolController: 返回工具集信息
+  deactivate AppDB
+  
+  ToolController -> ToolController: 提取工具详情
+  note right
+    从 toolList 中找到匹配的工具
+    或从子应用中获取 (兼容旧版)
+  end note
+end
+
+ToolController --> Frontend: 工作流执行完成
+deactivate ToolController
+
+Frontend --> User: 显示执行结果
+deactivate Frontend
+
+== 场景4: 工具配置更新同步 ==
+
+User -> Frontend: 更新MCP工具集
+activate Frontend
+
+Frontend -> ToolController: 重新获取工具列表
+activate ToolController
+
+ToolController -> Client: new MCPClient(url, headers)
+activate Client
+
+Client -> ExternalMCP: getTools()
+activate ExternalMCP
+ExternalMCP --> Client: 返回最新工具列表
+deactivate ExternalMCP
+
+Client --> ToolController: 返回工具配置
+deactivate Client
+
+ToolController -> ToolController: 对比新旧工具列表
+note right
+  检测变化:
+  - 新增的工具
+  - 删除的工具
+  - 修改的工具 (Schema变化)
+end note
+
+ToolController -> AppDB: 更新工具集配置
+activate AppDB
+note right
+  更新 toolConfig.mcpToolSet.toolList
+  保留用户的自定义配置
+end note
+AppDB --> ToolController: 更新成功
+deactivate AppDB
+
+ToolController --> Frontend: 返回更新结果
+deactivate ToolController
+
+Frontend --> User: 显示工具列表已更新
+note right
+  提示用户:
+  - 新增了哪些工具
+  - 哪些工具已移除
+  - 是否需要更新工作流
+end note
+
+deactivate Frontend
+
+@enduml

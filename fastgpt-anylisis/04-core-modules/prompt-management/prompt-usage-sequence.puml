@@ -1,0 +1,149 @@
+@startuml prompt-usage-sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding      6
+skinparam ParticipantPadding    30
+
+title FastGPT Prompt使用流程时序图
+
+actor 用户 as User
+participant "工作流UI" as UI
+participant "AI Chat节点" as AIChatNode
+participant "Prompt配置" as Config
+participant "运行时调度器" as Dispatcher
+participant "Prompt模块" as PromptModule
+participant "版本管理器" as VersionMgr
+participant "变量替换器" as VarReplacer
+participant "LLM" as LLM
+
+== 配置阶段 ==
+
+User -> UI : 编辑AI Chat节点
+activate UI
+
+UI -> UI : 打开引用Prompt设置
+
+UI -> PromptModule : 获取预定义模板
+activate PromptModule
+PromptModule --> UI : 返回Prompt_userQuotePromptList/\nPrompt_systemQuotePromptList
+deactivate PromptModule
+
+User -> UI : 1. 选择角色(System/User)\n2. 选择或自定义引用模板\n3. 编辑引用Prompt
+
+UI -> Config : 保存配置
+activate Config
+Config -> Config : 存储AiChatQuoteRole\nAiChatQuoteTemplate\nAiChatQuotePrompt
+Config --> UI : 保存成功
+deactivate Config
+
+deactivate UI
+
+== 运行时阶段 ==
+
+User -> AIChatNode : 发送对话请求
+activate AIChatNode
+
+AIChatNode -> Dispatcher : 触发dispatchChatCompletion
+activate Dispatcher
+
+group 数据集引用处理
+    Dispatcher -> Dispatcher : filterDatasetQuote()
+    activate Dispatcher
+    
+    Dispatcher -> Config : 获取quoteTemplate配置
+    Config --> Dispatcher : 返回用户自定义模板或null
+    
+    alt 用户未自定义模板
+        Dispatcher -> PromptModule : getQuoteTemplate(version)
+        activate PromptModule
+        PromptModule -> VersionMgr : getPromptByVersion()
+        activate VersionMgr
+        VersionMgr -> VersionMgr : 版本排序\n选择合适版本
+        VersionMgr --> PromptModule : 返回对应版本模板
+        deactivate VersionMgr
+        PromptModule --> Dispatcher : 返回默认模板
+        deactivate PromptModule
+    end
+    
+    Dispatcher -> VarReplacer : replaceVariable(template, variables)
+    activate VarReplacer
+    note right
+        变量替换:
+        {{id}} -> 引用ID
+        {{q}} -> 问题
+        {{a}} -> 答案
+        {{source}} -> 数据源
+        {{updateTime}} -> 更新时间
+        {{index}} -> 序号
+    end note
+    VarReplacer --> Dispatcher : 格式化后的引用内容
+    deactivate VarReplacer
+    
+    deactivate Dispatcher
+end
+
+group 消息组装
+    Dispatcher -> Dispatcher : getChatMessages()
+    activate Dispatcher
+    
+    Dispatcher -> Config : 获取aiChatQuoteRole\naiChatQuotePrompt配置
+    Config --> Dispatcher : 返回配置
+    
+    alt 用户未自定义Prompt
+        Dispatcher -> PromptModule : getQuotePrompt(version, role)
+        activate PromptModule
+        
+        alt role === 'user'
+            PromptModule -> VersionMgr : 从Prompt_userQuotePromptList获取
+        else role === 'system'
+            PromptModule -> VersionMgr : 从Prompt_systemQuotePromptList获取
+        end
+        
+        VersionMgr --> PromptModule : 返回对应版本Prompt
+        PromptModule --> Dispatcher : 返回默认Prompt
+        deactivate PromptModule
+    end
+    
+    Dispatcher -> VarReplacer : replaceVariable(prompt, variables)
+    activate VarReplacer
+    note right
+        变量替换:
+        {{quote}} -> 格式化的引用内容
+        {{question}} -> 用户问题
+    end note
+    VarReplacer --> Dispatcher : 最终Prompt
+    deactivate VarReplacer
+    
+    alt quoteRole === 'system'
+        Dispatcher -> Dispatcher : 添加到系统消息
+    else quoteRole === 'user'
+        Dispatcher -> Dispatcher : 替换用户输入
+    end
+    
+    Dispatcher -> Dispatcher : 组装完整messages数组
+    deactivate Dispatcher
+end
+
+Dispatcher -> LLM : createLLMResponse(messages)
+activate LLM
+
+LLM -> LLM : 处理Prompt\n生成响应
+
+LLM --> Dispatcher : 返回AI响应
+deactivate LLM
+
+Dispatcher --> AIChatNode : 返回结果
+deactivate Dispatcher
+
+AIChatNode --> User : 展示AI回答
+deactivate AIChatNode
+
+@enduml

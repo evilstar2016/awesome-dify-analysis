@@ -1,0 +1,163 @@
+@startuml 07-vector-storage-sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title 向量存储时序图
+
+participant "训练控制器" as TrainCtrl
+participant "向量控制器" as VectorCtrl
+participant "Embedding 服务" as EmbService
+participant "向量数据库" as VectorDB
+participant "Redis 缓存" as Redis
+participant "MongoDB" as Mongo
+
+TrainCtrl -> VectorCtrl: insertDatasetDataVector({\n  model, inputs, teamId,\n  datasetId, collectionId\n})
+activate VectorCtrl
+
+note right of VectorCtrl
+  inputs: 文本数组
+  model: Embedding 模型配置
+end note
+
+VectorCtrl -> EmbService: getVectorsByText({\n  model, input: inputs,\n  type: 'db'  // 使用 dbConfig\n})
+activate EmbService
+
+note right of EmbService
+  type = 'db':
+  - 使用 dbConfig 配置
+  - 优化存储性能
+  - 可能降低维度或压缩
+end note
+
+EmbService -> EmbService: 批量生成向量
+
+EmbService --> VectorCtrl: {\n  vectors: number[][],\n  tokens: number\n}
+deactivate EmbService
+
+VectorCtrl -> VectorDB: Vector.insert({\n  teamId, datasetId, collectionId,\n  vectors\n})
+activate VectorDB
+
+alt 向量数据库类型
+    
+    == PostgreSQL + PGVector ==
+    VectorDB -> VectorDB: 生成批量插入 SQL
+    
+    note right of VectorDB
+      INSERT INTO dataset_data_vector
+        (vector, team_id, dataset_id, collection_id)
+      VALUES
+        ('[v1]', 'team1', 'ds1', 'col1'),
+        ('[v2]', 'team1', 'ds1', 'col1'),
+        ...
+      RETURNING id;
+    end note
+    
+    VectorDB -> VectorDB: 执行批量插入
+    VectorDB -> VectorDB: HNSW 索引自动更新
+    
+    == Milvus ==
+    VectorDB -> VectorDB: 准备 Milvus 数据格式
+    
+    note right of VectorDB
+      data = vectors.map(v => ({
+        id: generateId(),
+        vector: v,
+        teamId: String(teamId),
+        datasetId: String(datasetId),
+        collectionId: String(collectionId)
+      }))
+    end note
+    
+    VectorDB -> VectorDB: client.insert({\n  collection_name,\n  data\n})
+    
+    == OceanBase ==
+    VectorDB -> VectorDB: 准备批量插入 SQL
+    VectorDB -> VectorDB: 执行插入
+    VectorDB -> VectorDB: 向量索引更新
+    
+end
+
+VectorDB --> VectorCtrl: { insertIds: [...] }
+deactivate VectorDB
+
+VectorCtrl -> Redis: teamVectorCache.get(teamId)
+activate Redis
+Redis --> VectorCtrl: currentCount
+deactivate Redis
+
+VectorCtrl -> Redis: teamVectorCache.set({\n  teamId,\n  count: currentCount + insertIds.length\n})
+activate Redis
+
+note right of Redis
+  缓存 Key:
+  team_vector_count:{teamId}
+  
+  过期时间: 30 分钟
+  
+  用途:
+  - 团队配额检查
+  - 向量数统计
+  - 计费依据
+end note
+
+Redis --> VectorCtrl: 缓存更新成功
+deactivate Redis
+
+VectorCtrl -> Mongo: 创建使用记录\ncreateTrainingUsage({\n  teamId, billSource,\n  vectorModel, tokens\n})
+activate Mongo
+
+note right of Mongo
+  记录字段:
+  - teamId: 团队 ID
+  - appName: 应用名称
+  - billSource: 'training'
+  - vectorModel: 模型名称
+  - tokens: Token 数量
+  - amount: 费用金额
+  - createTime: 创建时间
+end note
+
+Mongo -> Mongo: 插入使用记录
+Mongo --> VectorCtrl: 记录创建成功
+deactivate Mongo
+
+VectorCtrl --> TrainCtrl: {\n  tokens: embeddingTokens,\n  insertIds: [...]  \n}
+deactivate VectorCtrl
+
+note over TrainCtrl, Mongo
+  向量存储流程总结:
+  
+  1. 文本嵌入 (Embedding)
+     - 批量生成向量
+     - 使用 dbConfig 配置
+  
+  2. 向量插入 (Insert)
+     - 批量插入向量数据库
+     - 自动更新 HNSW 索引
+  
+  3. 缓存更新 (Cache)
+     - 增量更新团队向量数
+     - Redis 缓存 30 分钟
+  
+  4. 使用记录 (Billing)
+     - 记录 Token 消耗
+     - 用于计费和统计
+  
+  性能优化:
+  - 批量插入减少 DB 操作
+  - HNSW 索引异步更新
+  - Redis 缓存减少查询
+  - 异步记录使用日志
+end note
+
+@enduml

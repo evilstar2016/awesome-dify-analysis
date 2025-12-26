@@ -1,0 +1,158 @@
+@startuml FastGPT App Version Sequence
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title FastGPT 应用版本管理时序图
+
+actor 用户 as User
+participant "前端\nFrontend" as FE
+participant "API路由\n/api/core/app/version" as API
+participant "应用服务\nApp Service" as App
+participant "版本服务\nVersion Service" as Ver
+database "MongoDB" as DB
+
+== 发布版本 ==
+
+User -> FE: 点击发布版本
+activate FE
+
+FE -> User: 显示版本确认对话框
+User -> FE: 确认发布
+
+FE -> API: POST /api/core/app/version/publish
+activate API
+note right of API
+  {
+    appId: "...",
+    versionName: "v1.0.0"
+  }
+end note
+
+API -> App: 获取当前应用
+activate App
+App -> DB: 查询应用数据
+DB --> App: 应用配置(modules, edges)
+App --> API: 应用数据
+deactivate App
+
+API -> Ver: 创建版本
+activate Ver
+
+Ver -> Ver: 生成版本ID
+
+Ver -> DB: 保存版本快照
+activate DB
+note right of DB
+  {
+    appId: "...",
+    versionId: "...",
+    versionName: "v1.0.0",
+    modules: [...],
+    edges: [...],
+    createTime: Date
+  }
+end note
+DB --> Ver: 版本创建成功
+deactivate DB
+
+Ver --> API: 版本ID
+deactivate Ver
+
+API --> FE: 发布成功
+deactivate API
+
+FE --> User: 提示版本已发布
+deactivate FE
+
+== 查看版本列表 ==
+
+User -> FE: 查看版本历史
+activate FE
+
+FE -> API: GET /api/core/app/version/list
+activate API
+
+API -> Ver: 获取版本列表
+activate Ver
+Ver -> DB: 查询版本记录
+DB --> Ver: 版本列表
+Ver --> API: 版本数据
+deactivate Ver
+
+API --> FE: 版本列表
+deactivate API
+
+FE --> User: 显示版本列表
+deactivate FE
+
+== 版本回滚 ==
+
+User -> FE: 选择历史版本
+activate FE
+
+FE -> User: 显示版本预览
+User -> FE: 点击回滚
+
+FE -> API: POST /api/core/app/version/rollback
+activate API
+note right of API
+  {
+    appId: "...",
+    versionId: "..."
+  }
+end note
+
+API -> Ver: 获取目标版本
+activate Ver
+Ver -> DB: 查询版本数据
+DB --> Ver: 版本快照
+Ver --> API: 版本配置
+deactivate Ver
+
+API -> App: 更新应用配置
+activate App
+App -> DB: 更新modules和edges
+DB --> App: 更新完成
+App --> API: 回滚成功
+deactivate App
+
+API --> FE: 回滚完成
+deactivate API
+
+FE --> User: 提示已回滚到指定版本
+deactivate FE
+
+== 对比版本 ==
+
+User -> FE: 选择两个版本对比
+activate FE
+
+FE -> API: GET /api/core/app/version/diff
+activate API
+
+API -> Ver: 获取版本差异
+activate Ver
+Ver -> DB: 查询两个版本
+DB --> Ver: 版本数据
+Ver -> Ver: 计算差异
+Ver --> API: 差异结果
+deactivate Ver
+
+API --> FE: 差异数据
+deactivate API
+
+FE --> User: 显示版本差异
+deactivate FE
+
+@enduml

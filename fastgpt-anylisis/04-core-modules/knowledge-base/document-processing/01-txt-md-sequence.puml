@@ -1,0 +1,66 @@
+@startuml 01-txt-md-sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title TXT/MD 文档解析时序图
+
+participant "Worker 线程" as Worker
+participant "rawText 解析器" as Parser
+participant "iconv-lite" as Iconv
+participant "Markdown 工具" as MdUtils
+
+Worker -> Parser: readFileRawText(buffer, encoding)
+activate Parser
+
+Parser -> Parser: 检查编码类型
+
+alt 原生编码 (UTF-8, ASCII...)
+    Parser -> Parser: buffer.toString(encoding)
+else 扩展编码 (GBK, Big5...)
+    Parser -> Iconv: decode(buffer, encoding)
+    activate Iconv
+    Iconv --> Parser: 解码后的文本
+    deactivate Iconv
+else 编码未指定或失败
+    Parser -> Parser: buffer.toString('utf-8')\n(降级)
+end
+
+Parser -> MdUtils: matchMdImg(content)
+activate MdUtils
+
+note right of MdUtils
+  匹配 Markdown 图片：
+  ![alt](url)
+end note
+
+MdUtils -> MdUtils: 正则匹配图片
+MdUtils -> MdUtils: 生成图片 UUID
+MdUtils -> MdUtils: 替换图片为 UUID
+
+MdUtils --> Parser: {text, imageList}
+deactivate MdUtils
+
+Parser --> Worker: {rawText, imageList}
+deactivate Parser
+
+note over Worker, MdUtils
+  输出：
+  - rawText: 纯文本内容
+  - imageList: [{uuid, url}]
+  
+  支持编码：
+  - 原生: UTF-8, ASCII, UTF-16LE, Base64
+  - 扩展: GBK, Big5, Shift-JIS, ISO-8859-*
+end note
+
+@enduml

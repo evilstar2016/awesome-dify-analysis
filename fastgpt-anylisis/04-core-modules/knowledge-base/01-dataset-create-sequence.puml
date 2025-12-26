@@ -1,0 +1,77 @@
+@startuml 知识库创建流程
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+actor 用户 as User
+participant "API\n/api/core/dataset/create" as API
+participant "权限验证" as Auth
+participant "配额检查" as Limit
+participant "MongoDB" as Mongo
+participant "S3" as S3
+participant "审计日志" as Audit
+
+User -> API: POST 创建知识库请求\n{name, type, vectorModel, agentModel}
+activate API
+
+API -> Auth: authUserPer()\n验证团队权限
+activate Auth
+Auth --> API: {teamId, tmbId, userId}
+deactivate Auth
+
+API -> API: 验证模型配置\ngetEmbeddingModel(vectorModel)\ngetLLMModel(agentModel)
+note right: 确保向量模型和LLM模型存在
+
+API -> Limit: checkTeamDatasetLimit(teamId)
+activate Limit
+Limit -> Mongo: 查询团队知识库数量
+Mongo --> Limit: count
+Limit -> Limit: 对比配额限制
+Limit --> API: 检查通过
+deactivate Limit
+
+API -> Mongo: mongoSessionRun()\n开启事务
+activate Mongo
+
+API -> Mongo: MongoDataset.create()\n创建知识库记录
+note right
+{
+  name, intro, teamId, tmbId,
+  vectorModel, agentModel,
+  type, parentId
+}
+end note
+Mongo --> API: {_id: datasetId}
+
+API -> Mongo: MongoResourcePermission.insertOne()\n创建权限记录
+note right
+{
+  teamId, tmbId,
+  resourceId: datasetId,
+  permission: Owner
+}
+end note
+
+Mongo -> Mongo: 提交事务
+Mongo --> API: datasetId
+deactivate Mongo
+
+API -> Audit: addAuditLog()\n记录创建操作
+activate Audit
+Audit -> Mongo: 写入审计日志
+Audit --> API: 记录完成
+deactivate Audit
+
+API --> User: 返回 datasetId
+deactivate API
+
+@enduml

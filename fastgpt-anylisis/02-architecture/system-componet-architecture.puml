@@ -1,0 +1,158 @@
+@startuml FastGPT System Architecture
+
+!theme plain
+skinparam componentStyle rectangle
+skinparam backgroundColor white
+skinparam Package { 
+  BackgroundColor LightGray
+  FontColor Blue
+}
+skinparam component {
+  BackgroundColor LightBlue
+  BorderColor Black
+  ArrowColor Black
+  FontColor DarkBlue
+}
+skinparam note {
+  backgroundColor LightYellow
+}
+
+' 前端展示层
+package "前端展示层 (Frontend Layer)" {
+  [Next.js App\n(projects/app)] as App
+  [Web UI 组件库\n(packages/web)] as WebUI
+  [React Flow 编排器] as FlowEditor
+  App -down-> WebUI
+  App -down-> FlowEditor
+}
+
+' API 路由层
+package "API 路由层 (API Routes)" {
+  [App 管理 API] as AppAPI
+  [Chat 对话 API] as ChatAPI
+  [Dataset 知识库 API] as DatasetAPI
+  [AI 模型 API] as AIAPI
+  [Workflow 工作流 API] as WorkflowAPI
+  [Plugin 插件 API] as PluginAPI
+  [User 用户 API] as UserAPI
+  [MCP 工具 API] as MCPAPI
+  [OpenAPI 兼容接口] as OpenAPI
+}
+
+' 业务服务层
+package "业务服务层 (Service Layer)" {
+  [App Service\n应用核心逻辑] as AppService
+  [Chat Service\n对话逻辑] as ChatService
+  [Dataset Service\n知识库逻辑] as DatasetService
+  [AI Service\nAI 能力封装] as AIService
+  [Workflow Engine\n工作流引擎] as WorkflowEngine
+  [Plugin Service\n插件系统] as PluginService
+  [Worker 任务处理] as WorkerService
+}
+
+' 共享层
+package "共享层 (Shared Layer)" {
+  [Global Types & Utils\n(packages/global)] as GlobalLib
+  [OpenAPI Schema] as OpenAPISchema
+  [SDK] as SDK
+}
+
+' 数据持久化层
+package "数据持久化层 (Data Persistence)" {
+  database "MongoDB" as MongoDB {
+    [应用数据]
+    [对话记录]
+    [用户/团队]
+  }
+  database "向量数据库" as VectorDB {
+    [PGVector]
+    [Milvus]
+    [OceanBase]
+  }
+  database "Redis" as Redis {
+    [任务队列 (BullMQ)]
+    [缓存]
+  }
+  database "MinIO/S3" as S3 {
+    [文件存储]
+  }
+}
+
+' 外部服务层
+cloud "外部服务 (External Services)" {
+  [AI 模型服务\nOpenAI/Azure/OneAPI] as AIModel
+  [FastGPT Plugin 运行时] as PluginRuntime
+  [文档处理服务\ndoc2x/PDF解析] as DocProcessor
+  [语音服务\nSTT/TTS] as VoiceService
+  [外部集成\n钉钉/飞书/企微] as ExternalIntegration
+  [MCP 服务端/客户端] as MCPService
+}
+
+' 其他组件
+component [Sandbox 代码执行\n(Python 3.11)] as Sandbox
+component [OpenTelemetry\n监控日志] as OTel
+
+' 前端 -> API
+App -down-> AppAPI
+App -down-> ChatAPI
+App -down-> DatasetAPI
+App -down-> WorkflowAPI
+App -down-> PluginAPI
+App -down-> OpenAPI
+
+' API -> Service
+AppAPI -down-> AppService
+ChatAPI -down-> ChatService
+DatasetAPI -down-> DatasetService
+AIAPI -down-> AIService
+WorkflowAPI -down-> WorkflowEngine
+PluginAPI -down-> PluginService
+UserAPI -down-> AppService
+MCPAPI -down-> WorkflowEngine
+
+' Service -> 共享层
+AppService -down-> GlobalLib
+ChatService -down-> GlobalLib
+DatasetService -down-> GlobalLib
+WorkflowEngine -down-> GlobalLib
+PluginService -down-> GlobalLib
+AIService -down-> GlobalLib
+
+' Service -> 数据层
+AppService -down-> MongoDB
+ChatService -down-> MongoDB
+DatasetService -down-> MongoDB
+DatasetService -down-> VectorDB
+WorkflowEngine -down-> Redis
+WorkerService -down-> Redis
+
+' Service -> 外部服务
+AIService -right-> AIModel
+ChatService -right-> AIModel
+WorkflowEngine -right-> PluginRuntime
+WorkflowEngine -right-> MCPService
+DatasetService -right-> DocProcessor
+ChatService -right-> VoiceService
+AppService -right-> ExternalIntegration
+
+' 文件存储
+DatasetService -down-> S3
+AppService -down-> S3
+
+' Worker 与任务队列
+WorkerService -up-> DatasetService
+WorkerService -up-> ChatService
+
+' Sandbox
+WorkflowEngine -right-> Sandbox
+
+' 监控
+AppService -down-> OTel
+ChatService -down-> OTel
+WorkflowEngine -down-> OTel
+
+' OpenAPI Schema
+OpenAPI -down-> OpenAPISchema
+SDK -up-> OpenAPISchema
+
+@enduml

@@ -1,0 +1,196 @@
+@startuml 06-hybrid-retrieval-sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title 混合检索时序图 (Hybrid Retrieval)
+
+actor 用户 as User
+participant "检索控制器" as SearchCtrl
+participant "查询扩展" as QueryExt
+participant "Embedding 服务" as EmbService
+participant "向量数据库" as VectorDB
+participant "MongoDB" as Mongo
+participant "RRF 融合" as RRF
+participant "ReRank 服务" as ReRank
+
+User -> SearchCtrl: searchDatasetData(query, mode, ...)
+activate SearchCtrl
+
+note right of SearchCtrl
+  检索模式:
+  - embedding: 纯向量检索
+  - fullTextRecall: 纯全文检索
+  - mixedRecall: 混合检索 (推荐)
+end note
+
+SearchCtrl -> SearchCtrl: 判断检索模式\n计算召回限制
+note right of SearchCtrl
+  embedding: {embLimit: 100, ftLimit: 0}
+  fullTextRecall: {embLimit: 0, ftLimit: 100}
+  mixedRecall: {embLimit: 80, ftLimit: 60}
+end note
+
+opt 启用查询扩展
+    SearchCtrl -> QueryExt: queryExtension(query, llmModel, embModel)
+    activate QueryExt
+    
+    QueryExt -> QueryExt: LLM 生成候选查询 (10个)
+    QueryExt -> QueryExt: Lazy Greedy 算法选择最优查询
+    
+    note right of QueryExt
+      边际增益公式:
+      Gain = α·sim(q, original) + 
+             (1-α)·min(sim(q, selected))
+      
+      α = 0.5 (相关性权重)
+    end note
+    
+    QueryExt --> SearchCtrl: 扩展查询列表
+    deactivate QueryExt
+end
+
+SearchCtrl -> SearchCtrl: 获取禁用集合列表\n过滤集合元数据
+
+par 向量召回 (Embedding Recall)
+    SearchCtrl -> EmbService: getVectorsByText(queries, 'query')
+    activate EmbService
+    EmbService --> SearchCtrl: { vectors, tokens }
+    deactivate EmbService
+    
+    loop 每个查询向量
+        SearchCtrl -> VectorDB: recallFromVectorStore(vector, limit)
+        activate VectorDB
+        
+        note right of VectorDB
+          PostgreSQL HNSW 查询:
+          
+          SET hnsw.ef_search = 100;
+          SELECT id, collection_id, 
+                 vector <#> '[向量]' AS score
+          FROM dataset_data_vector
+          WHERE dataset_id IN (...)
+          ORDER BY score LIMIT 80;
+          
+          距离算子 <#>: 负内积
+        end note
+        
+        VectorDB -> VectorDB: HNSW 索引搜索
+        VectorDB --> SearchCtrl: 向量召回结果\n{ id, collectionId, score }
+        deactivate VectorDB
+    end
+    
+    SearchCtrl -> SearchCtrl: 聚合向量召回结果\n去重 + 取最高排名
+
+else 全文召回 (Full-Text Recall)
+    loop 每个查询
+        SearchCtrl -> Mongo: 全文检索\n$text: { $search: jiebaSplit(query) }
+        activate Mongo
+        
+        note right of Mongo
+          MongoDB Text Index:
+          
+          db.collection.aggregate([
+            { $match: { 
+                $text: { $search: "分词结果" }
+              }
+            },
+            { $sort: { score: { $meta: "textScore" } } },
+            { $limit: 60 }
+          ])
+        end note
+        
+        Mongo -> Mongo: 分词 (jieba)
+        Mongo -> Mongo: 文本索引匹配
+        Mongo --> SearchCtrl: 全文召回结果\n{ dataId, collectionId, score }
+        deactivate Mongo
+    end
+end
+
+SearchCtrl -> SearchCtrl: 查询数据和集合详情\n(MongoDB 批量查询)
+
+SearchCtrl -> RRF: datasetSearchResultConcat([\n  { weight: embWeight, list: embResults },\n  { weight: 1-embWeight, list: ftResults }\n])
+activate RRF
+
+note right of RRF
+  RRF 融合公式:
+  
+  score(d) = Σ (weight_i / (k + rank_i(d)))
+  
+  其中:
+  - weight_i: 召回列表权重
+  - rank_i(d): 文档排名
+  - k: 常数 (60)
+end note
+
+RRF -> RRF: 计算 RRF 分数
+RRF -> RRF: 排序
+RRF --> SearchCtrl: 融合后的结果列表
+deactivate RRF
+
+opt 启用 ReRank
+    SearchCtrl -> ReRank: datasetDataReRank(query, results, model)
+    activate ReRank
+    
+    note right of ReRank
+      ReRank 模型:
+      - bge-reranker-base
+      - bge-reranker-large
+      
+      输入: (query, doc) 对
+      输出: 相关性分数 (0-1)
+    end note
+    
+    ReRank -> ReRank: 批量评分
+    ReRank -> ReRank: 重新排序
+    ReRank --> SearchCtrl: ReRank 结果
+    deactivate ReRank
+    
+    SearchCtrl -> RRF: 融合 RRF 和 ReRank\n{ weight: 1-rrWeight, rrfList },\n{ weight: rrWeight, reRankList }
+    activate RRF
+    RRF --> SearchCtrl: 最终融合结果
+    deactivate RRF
+end
+
+SearchCtrl -> SearchCtrl: 去重相同 Q&A
+
+alt 使用 ReRank
+    SearchCtrl -> SearchCtrl: 过滤 ReRank 分数 < similarity
+else 向量检索模式
+    SearchCtrl -> SearchCtrl: 过滤向量相似度 < similarity
+end
+
+SearchCtrl -> SearchCtrl: Token 限制过滤\nfilterDatasetDataByMaxTokens(limit)
+
+SearchCtrl --> User: {\n  searchRes: 最终结果,\n  embeddingTokens,\n  reRankInputTokens,\n  searchMode,\n  usingSimilarityFilter\n}
+deactivate SearchCtrl
+
+note over User, ReRank
+  检索流程总结:
+  
+  1. 查询扩展 (可选)
+  2. 并行召回:
+     - 向量召回 (HNSW 索引)
+     - 全文召回 (Text Index)
+  3. RRF 融合 (加权排序)
+  4. ReRank 重排序 (可选)
+  5. 相似度过滤
+  6. Token 限制
+  
+  性能优化:
+  - 并行召回提高速度
+  - HNSW 索引快速检索
+  - 批量数据库查询
+  - Redis 缓存热点数据
+end note
+
+@enduml

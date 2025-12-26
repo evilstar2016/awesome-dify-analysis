@@ -1,0 +1,91 @@
+@startuml 06-csv-sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title CSV 文件解析时序图
+
+participant "Worker 线程" as Worker
+participant "CSV 解析器" as Parser
+participant "rawText 解析器" as RawText
+participant "Papa Parse" as Papa
+
+Worker -> Parser: readCsvRawText(buffer, encoding)
+activate Parser
+
+Parser -> RawText: readFileRawText(buffer, encoding)
+activate RawText
+RawText --> Parser: {rawText: csvContent}
+deactivate RawText
+
+Parser -> Papa: Papa.parse(csvContent)
+activate Papa
+
+Papa -> Papa: 自动检测分隔符\n(, ; \t |)
+
+note right of Papa
+  自动检测：
+  - 逗号 (,)
+  - 分号 (;)
+  - 制表符 (\t)
+  - 竖线 (|)
+end note
+
+Papa -> Papa: 解析引号包裹
+Papa -> Papa: 处理转义字符
+Papa -> Papa: 构建数据数组
+
+Papa --> Parser: {data: csvArr}
+deactivate Papa
+
+Parser -> Parser: 提取表头\nheader = csvArr[0]
+
+Parser -> Parser: 生成 Markdown 表格
+note right of Parser
+  步骤：
+  1. 表头行：| Name | Age |
+  2. 分隔行：| --- | --- |
+  3. 数据行：| Alice | 30 |
+  
+  单元格内换行：
+  \n → \\n (转义)
+end note
+
+Parser -> Parser: 转义换行符\nitem.replace(/\n/g, '\\n')
+
+Parser --> Worker: {rawText: csv, formatText: markdown}
+deactivate Parser
+
+note over Worker, Papa
+  输出：
+  - rawText: 原始 CSV 文本
+  - formatText: Markdown 表格
+  
+  支持特性：
+  - 多种分隔符（自动检测）
+  - 引号包裹字段
+  - 转义字符
+  - 多行单元格
+  
+  示例：
+  输入 CSV：
+  Name,Age,"Description"
+  Alice,30,"Line 1
+  Line 2"
+  
+  输出 Markdown：
+  | Name | Age | Description |
+  | --- | --- | --- |
+  | Alice | 30 | Line 1\\nLine 2 |
+end note
+
+@enduml

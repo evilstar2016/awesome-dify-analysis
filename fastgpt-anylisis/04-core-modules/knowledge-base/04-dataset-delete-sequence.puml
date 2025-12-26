@@ -1,0 +1,188 @@
+@startuml 知识库删除流程
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+actor 用户 as User
+participant "API\n/api/core/dataset/delete" as API
+participant "权限验证" as Auth
+participant "数据查找" as Find
+participant "MongoDB" as Mongo
+participant "向量数据库" as Vector
+participant "S3" as S3
+participant "删除队列" as Queue
+participant "Worker" as Worker
+
+User -> API: DELETE 删除知识库\n{datasetId}
+activate API
+
+API -> Auth: authDataset()\n验证删除权限
+activate Auth
+Auth --> API: {teamId, dataset}
+deactivate Auth
+
+API -> Find: findDatasetAndAllChildren()\n递归查找子知识库
+activate Find
+note right
+递归逻辑:
+1. 查找 parentId = datasetId 的子集
+2. 对每个子集递归查找
+3. 返回完整树形结构
+end note
+Find -> Mongo: 递归查询子知识库
+Mongo --> Find: datasets[]
+Find --> API: [dataset, ...children]
+deactivate Find
+
+alt 立即删除 (数据量小)
+    API -> API: delDatasetRelevantData()\n级联删除
+    activate API
+    
+    API -> Mongo: 查找所有集合\nMongoDatasetCollection.find()
+    activate Mongo
+    Mongo --> API: collections[]
+    
+    loop 每个集合
+        API -> API: delCollectionRelatedSource()
+        
+        API -> Mongo: 删除数据块\nMongoDatasetData.deleteMany()
+        API -> Mongo: 删除文本索引\nMongoDatasetDataText.deleteMany()
+        API -> Mongo: 删除训练任务\nMongoDatasetTraining.deleteMany()
+        
+        API -> Vector: deleteVectorsByIds()\n删除向量数据
+        activate Vector
+        note right
+        PGVector:
+        DELETE FROM dataset_vector
+        WHERE data_id IN (...)
+        
+        Milvus:
+        collection.delete({
+          expr: "data_id in [...]"
+        })
+        end note
+        Vector --> API: 删除完成
+        deactivate Vector
+        
+        API -> S3: 删除文件\ndelete(fileId)
+        activate S3
+        S3 --> API: 删除完成
+        deactivate S3
+        
+        API -> Mongo: 删除集合\nMongoDatasetCollection.deleteOne()
+    end
+    
+    API -> Mongo: 删除知识库\nMongoDataset.deleteMany()
+    API -> Mongo: 删除权限\nMongoResourcePermission.deleteMany()
+    API -> Mongo: 删除图片\ndelImgByRelatedId()
+    
+    deactivate Mongo
+    deactivate API
+    
+    API --> User: 删除成功
+    
+else 延迟删除 (数据量大)
+    API -> Mongo: 标记删除状态\nMongoDataset.updateMany()
+    activate Mongo
+    note right
+    {
+      _id: {$in: datasetIds},
+      $set: {
+        status: 'deleting',
+        deleteTime: new Date()
+      }
+    }
+    end note
+    Mongo --> API: 标记完成
+    deactivate Mongo
+    
+    API -> Queue: addDatasetDeleteJob()\n加入删除队列
+    activate Queue
+    note right
+    BullMQ Job:
+    {
+      teamId,
+      datasetId,
+      datasets: [...]
+    }
+    
+    队列配置:
+    - attempts: 3
+    - backoff: exponential
+    - delay: 60000 (1分钟后执行)
+    end note
+    Queue --> API: jobId
+    deactivate Queue
+    
+    API --> User: 已加入删除队列
+end
+
+deactivate API
+
+... 异步删除处理 ...
+
+Worker -> Queue: 监听删除队列\ndatasetDeleteProcessor
+activate Worker
+
+Queue --> Worker: {teamId, datasetId, datasets}
+
+Worker -> Worker: 计时开始
+
+loop 每个知识库
+    Worker -> Mongo: 查找所有集合
+    activate Mongo
+    Mongo --> Worker: collections[]
+    
+    loop 每个集合
+        Worker -> Mongo: 删除数据块
+        Worker -> Mongo: 删除文本索引
+        Worker -> Mongo: 删除训练任务
+        Worker -> Vector: 删除向量(批量)
+        activate Vector
+        note right: 每批1000个向量ID
+        Vector --> Worker: 删除完成
+        deactivate Vector
+        Worker -> S3: 删除文件
+        Worker -> Mongo: 删除集合
+    end
+    
+    Worker -> Mongo: 删除知识库
+    Worker -> Mongo: 删除权限
+    Worker -> S3: 删除文件夹\ndeleteFolder("dataset/{id}/")
+    activate S3
+    S3 --> Worker: 删除完成
+    deactivate S3
+    
+    deactivate Mongo
+end
+
+Worker -> Worker: 计时结束\nduration = endTime - startTime
+
+Worker -> Mongo: 记录删除日志
+activate Mongo
+note right
+{
+  type: 'dataset_delete',
+  teamId,
+  datasetIds,
+  totalDatasets: count,
+  duration,
+  success: true
+}
+end note
+Mongo --> Worker: 记录完成
+deactivate Mongo
+
+Worker --> Queue: 任务完成
+deactivate Worker
+
+@enduml

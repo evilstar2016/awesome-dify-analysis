@@ -1,0 +1,119 @@
+@startuml 03-pdf-sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title PDF 文档解析时序图（三级策略）
+
+participant "Service 层" as Service
+participant "系统解析器" as SystemParser
+participant "pdfjs-dist" as PdfJS
+participant "自定义服务" as CustomAPI
+participant "Doc2X 服务" as Doc2X
+
+Service -> Service: 判断解析策略
+
+alt 策略 1: 系统解析
+    Service -> SystemParser: readPdfRawText(buffer)
+    activate SystemParser
+    
+    SystemParser -> PdfJS: getDocument(buffer)
+    activate PdfJS
+    PdfJS --> SystemParser: PDF 文档对象
+    deactivate PdfJS
+    
+    loop 遍历每一页
+        SystemParser -> PdfJS: getPage(pageNum)
+        activate PdfJS
+        PdfJS --> SystemParser: 页面对象
+        
+        SystemParser -> PdfJS: getTextContent()
+        PdfJS --> SystemParser: 文本项数组
+        deactivate PdfJS
+        
+        SystemParser -> SystemParser: 过滤页眉页脚\n(5% 阈值)
+        
+        SystemParser -> SystemParser: EOL 检测\n(段落识别)
+        
+        SystemParser -> SystemParser: 拼接文本
+        
+        SystemParser -> SystemParser: page.cleanup()\n(释放内存)
+    end
+    
+    SystemParser -> PdfJS: destroy()
+    activate PdfJS
+    deactivate PdfJS
+    
+    SystemParser --> Service: {rawText}
+    deactivate SystemParser
+
+else 策略 2: 自定义解析服务
+    Service -> CustomAPI: POST /parse\n(PDF Buffer + API Key)
+    activate CustomAPI
+    
+    note right of CustomAPI
+      外部 API 服务
+      支持：
+      - 表格识别
+      - 公式识别
+      - OCR 扫描版
+    end note
+    
+    CustomAPI -> CustomAPI: 解析 PDF
+    CustomAPI -> CustomAPI: 表格识别
+    CustomAPI -> CustomAPI: 公式识别
+    
+    CustomAPI --> Service: {text, tables, formulas}
+    deactivate CustomAPI
+    
+    Service -> Service: 计算 Token\n(计费)
+
+else 策略 3: Doc2X 服务
+    Service -> Doc2X: POST /parse\n(PDF Buffer + Doc2X Key)
+    activate Doc2X
+    
+    note right of Doc2X
+      AI 驱动的高级识别：
+      - 深度学习模型
+      - 表格还原
+      - 图片描述
+      - 手写识别
+      - 复杂布局
+    end note
+    
+    Doc2X -> Doc2X: AI 解析
+    Doc2X -> Doc2X: 表格结构还原
+    Doc2X -> Doc2X: 公式转 LaTeX
+    Doc2X -> Doc2X: 图片生成描述
+    
+    Doc2X --> Service: {markdown, images, tables, formulas}
+    deactivate Doc2X
+    
+    Service -> Service: 计算 Token\n(计费)
+end
+
+Service --> Service: 返回解析结果
+
+note over Service, Doc2X
+  性能对比：
+  
+  系统解析：速度快，免费，适合纯文本
+  自定义服务：中等速度，低成本，支持表格/公式
+  Doc2X：速度慢，中等成本，准确率最高
+  
+  选择策略：
+  - 普通 PDF → 系统解析
+  - 表格/公式 → 自定义服务
+  - 扫描版/复杂布局 → Doc2X
+end note
+
+@enduml

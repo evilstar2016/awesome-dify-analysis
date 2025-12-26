@@ -1,0 +1,182 @@
+@startuml MCP客户端调用时序图
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+actor "工作流引擎" as Workflow
+participant "dispatchRunTool" as RunTool
+participant "MCPClient" as Client
+participant "mcpClientMemory" as Memory
+participant "getConnection" as Connection
+participant "MCP服务端" as Server
+database "工具配置DB" as DB
+
+== 初始化阶段 ==
+
+Workflow -> RunTool: 执行MCP工具节点
+activate RunTool
+
+RunTool -> RunTool: 检查 toolConfig?.mcpTool?.toolId
+note right
+  工具ID格式:
+  mcp-{parentId}/{toolName}
+end note
+
+RunTool -> DB: getAppVersionById(parentId, version)
+activate DB
+DB --> RunTool: 返回工具集配置
+deactivate DB
+
+RunTool -> RunTool: 提取 url, headerSecret
+note right
+  从 tool.nodes[0].toolConfig?.mcpToolSet
+  获取连接配置
+end note
+
+== 连接管理阶段 ==
+
+RunTool -> Memory: 检查 mcpClientMemory[url]
+activate Memory
+
+alt 连接已存在
+  Memory --> RunTool: 返回已缓存的 mcpClient
+  note right
+    复用已建立的连接
+    避免重复连接开销
+  end note
+else 连接不存在
+  Memory --> RunTool: 返回 undefined
+  
+  RunTool -> Client: new MCPClient(url, headers)
+  activate Client
+  
+  Client -> Client: 初始化 SDK Client
+  note right
+    Client({
+      name: 'FastGPT-MCP-client',
+      version: '1.0.0'
+    })
+  end note
+  
+  RunTool -> Memory: mcpClientMemory[url] = mcpClient
+  note right
+    缓存新建的连接
+    供后续工具调用复用
+  end note
+end
+
+deactivate Memory
+
+== 工具调用阶段 ==
+
+RunTool -> Client: toolCall(toolName, params, closeConnection=false)
+note right
+  closeConnection=false
+  保持连接不关闭
+end note
+
+Client -> Connection: getConnection()
+activate Connection
+
+Connection -> Connection: 尝试 StreamableHTTPClientTransport
+note right
+  优先使用 HTTP 流式传输
+end note
+
+alt HTTP连接成功
+  Connection -> Server: HTTP连接
+  activate Server
+  Server --> Connection: 连接建立
+else HTTP连接失败
+  Connection -> Connection: 降级到 SSEClientTransport
+  note right
+    使用 Server-Sent Events
+    传输协议
+  end note
+  
+  Connection -> Server: SSE连接
+  Server --> Connection: 连接建立
+end
+
+Connection --> Client: 返回已连接的 client
+deactivate Connection
+
+Client -> Server: client.callTool(name, arguments, timeout=300s)
+note right
+  发送 MCP CallTool 请求
+  {
+    name: toolName,
+    arguments: params
+  }
+end note
+
+Server -> Server: 处理工具调用
+activate Server
+
+Server --> Client: 返回工具执行结果
+deactivate Server
+deactivate Server
+
+Client --> RunTool: 返回 result
+note right
+  连接保持打开状态
+  不调用 closeConnection()
+end note
+
+deactivate Client
+
+== 结果处理阶段 ==
+
+RunTool -> RunTool: 构建节点输出
+note right
+  {
+    data: { rawResponse: result },
+    nodeResponse: { toolRes: result },
+    toolResponses: result
+  }
+end note
+
+RunTool --> Workflow: 返回工具执行结果
+deactivate RunTool
+
+== 工作流结束阶段 ==
+
+Workflow -> Memory: 获取所有 mcpClientMemory
+activate Memory
+Memory --> Workflow: 返回所有缓存的 mcpClient
+deactivate Memory
+
+loop 遍历所有客户端
+  Workflow -> Client: closeConnection()
+  activate Client
+  
+  Client -> Client: retryFn(() => client.close(), 3)
+  note right
+    最多重试3次
+    确保连接正常关闭
+  end note
+  
+  Client -> Server: 关闭连接
+  activate Server
+  Server --> Client: 确认关闭
+  deactivate Server
+  
+  Client --> Workflow: 连接已关闭
+  deactivate Client
+end
+
+note over Workflow
+  工作流执行完成
+  所有MCP连接已清理
+end note
+
+@enduml

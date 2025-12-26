@@ -1,0 +1,278 @@
+@startuml FastGPT_Data_Model_ER
+
+!define ENTITY_COLOR #E6F3FF
+!define RELATIONSHIP_COLOR #FFE6E6
+!define VECTORDB #E6FFFF
+
+title FastGPT 数据模型 ER 图
+
+skinparam linetype ortho
+
+' 用户与团队
+entity "users" as users ENTITY_COLOR {
+  * _id : ObjectId <<PK>>
+  --
+  * username : String <<UK>>
+  * password : String
+  status : String
+  createTime : Date
+  timezone : String
+  language : String
+  lastLoginTmbId : ObjectId <<FK>>
+  inviterId : ObjectId <<FK>>
+  phonePrefix : Number
+  contact : String
+  openaiAccount : Object
+}
+
+entity "teams" as teams ENTITY_COLOR {
+  * _id : ObjectId <<PK>>
+  --
+  * name : String
+  * ownerId : ObjectId <<FK>>
+  avatar : String
+  createTime : Date
+  balance : Number
+  teamDomain : String
+  limit : Object
+  openaiAccount : Object
+  externalWorkflowVariables : Object
+}
+
+entity "team_members" as team_members ENTITY_COLOR {
+  * _id : ObjectId <<PK>>
+  --
+  * teamId : ObjectId <<FK>>
+  * userId : ObjectId <<FK>>
+  * role : String
+  * status : String
+  createTime : Date
+  defaultTeam : Boolean
+}
+
+' 应用模型
+entity "apps" as apps ENTITY_COLOR {
+  * _id : ObjectId <<PK>>
+  --
+  parentId : ObjectId <<FK>>
+  * teamId : ObjectId <<FK>>
+  * tmbId : ObjectId <<FK>>
+  * name : String
+  * type : String
+  version : String
+  avatar : String
+  intro : String
+  templateId : String
+  updateTime : Date
+  modules : Array
+  edges : Array
+  chatConfig : Object
+  pluginData : Object
+}
+
+entity "app_versions" as app_versions ENTITY_COLOR {
+  * _id : ObjectId <<PK>>
+  --
+  * appId : ObjectId <<FK>>
+  versionName : String
+  nodes : Array
+  edges : Array
+  chatConfig : Object
+  isPublish : Boolean
+  tmbId : ObjectId <<FK>>
+  time : Date
+}
+
+' 知识库模型
+entity "datasets" as datasets ENTITY_COLOR {
+  * _id : ObjectId <<PK>>
+  --
+  parentId : ObjectId <<FK>>
+  * teamId : ObjectId <<FK>>
+  * tmbId : ObjectId <<FK>>
+  * name : String
+  * type : String
+  avatar : String
+  intro : String
+  updateTime : Date
+  vectorModel : String
+  agentModel : String
+  chunkSize : Number
+  chunkSplitter : String
+  websiteConfig : Object
+  apiDatasetConfig : Object
+}
+
+entity "dataset_collections" as dataset_collections ENTITY_COLOR {
+  * _id : ObjectId <<PK>>
+  --
+  * teamId : ObjectId <<FK>>
+  * datasetId : ObjectId <<FK>>
+  * tmbId : ObjectId <<FK>>
+  parentId : ObjectId <<FK>>
+  * name : String
+  * type : String
+  trainingType : String
+  chunkSize : Number
+  fileId : String
+  rawLink : String
+  hashRawText : String <<UK>>
+  createTime : Date
+  updateTime : Date
+  trainingAmount : Number
+}
+
+entity "dataset_datas" as dataset_datas ENTITY_COLOR {
+  * _id : ObjectId <<PK>>
+  --
+  * teamId : ObjectId <<FK>>
+  * datasetId : ObjectId <<FK>>
+  * collectionId : ObjectId <<FK>>
+  * tmbId : ObjectId <<FK>>
+  chunkIndex : Number
+  q : String
+  a : String
+  fullTextToken : String
+  indexes : Array
+  updateTime : Date
+}
+
+entity "dataset_trainings" as dataset_trainings ENTITY_COLOR {
+  * _id : ObjectId <<PK>>
+  --
+  * teamId : ObjectId <<FK>>
+  * datasetId : ObjectId <<FK>>
+  * collectionId : ObjectId <<FK>>
+  * tmbId : ObjectId <<FK>>
+  billId : String
+  mode : String
+  prompt : String
+  q : String
+  a : String
+  chunkIndex : Number
+  model : String
+  lockTime : Date
+}
+
+' 对话模型
+entity "chats" as chats ENTITY_COLOR {
+  * _id : ObjectId <<PK>>
+  --
+  * chatId : String <<UK>>
+  * teamId : ObjectId <<FK>>
+  * tmbId : ObjectId <<FK>>
+  * appId : ObjectId <<FK>>
+  * source : String
+  createTime : Date
+  updateTime : Date
+  title : String
+  customTitle : String
+  top : Boolean
+  variables : Object
+  metadata : Object
+}
+
+entity "chat_items" as chat_items ENTITY_COLOR {
+  * _id : ObjectId <<PK>>
+  --
+  * chatId : String <<FK>>
+  * dataId : String <<UK>>
+  * teamId : ObjectId <<FK>>
+  * tmbId : ObjectId <<FK>>
+  * appId : ObjectId <<FK>>
+  nodeOutputs : Array
+  interactive : Object
+  metadata : Object
+  createTime : Date
+}
+
+' 向量数据库（独立）
+entity "dataset_vector" as dataset_vector #E6FFFF {
+  * id : Serial <<PK>>
+  --
+  team_id : VARCHAR(24)
+  dataset_id : VARCHAR(24)
+  collection_id : VARCHAR(24)
+  data_id : VARCHAR(24) <<UK>>
+  vector : vector(1536)
+  create_time : Timestamp
+}
+
+' 系统配置
+entity "system_configs" as system_configs ENTITY_COLOR {
+  * _id : ObjectId <<PK>>
+  --
+  * key : String <<UK>>
+  value : Mixed
+  updateTime : Date
+}
+
+entity "system_logs" as system_logs ENTITY_COLOR {
+  * _id : ObjectId <<PK>>
+  --
+  level : String
+  message : String
+  context : Object
+  createTime : Date
+}
+
+' 关系定义
+users ||--o{ team_members : "userId"
+users ||--o{ teams : "ownerId"
+
+teams ||--o{ team_members : "teamId"
+team_members ||--o{ apps : "tmbId"
+team_members ||--o{ datasets : "tmbId"
+
+apps ||--o{ app_versions : "appId"
+apps ||--o{ chats : "appId"
+apps ||--o{ apps : "parentId (folder)"
+
+datasets ||--o{ dataset_collections : "datasetId"
+datasets ||--o{ dataset_trainings : "datasetId"
+datasets ||--o{ datasets : "parentId (folder)"
+
+dataset_collections ||--o{ dataset_datas : "collectionId"
+dataset_collections ||--o{ dataset_collections : "parentId"
+dataset_collections ||--o{ dataset_trainings : "collectionId"
+
+dataset_datas ||..o{ dataset_vector : "indexes.dataId"
+
+chats ||--o{ chat_items : "chatId"
+
+note right of users
+  用户表
+  - 支持手机/邮箱登录
+  - 密码加密存储
+  - 支持多语言/时区
+end note
+
+note right of teams
+  团队表
+  - 多租户隔离
+  - 账户余额管理
+  - 自定义配置
+end note
+
+note right of datasets
+  知识库表
+  - 支持多种数据源
+  - 灵活的分块配置
+  - 向量模型配置
+end note
+
+note right of dataset_vector
+  向量数据库
+  - 独立的向量存储
+  - 支持余弦相似度检索
+  - HNSW索引加速
+end note
+
+note bottom of chats
+  对话会话表
+  - 支持多种来源
+  - 变量管理
+  - 元数据扩展
+end note
+
+@enduml

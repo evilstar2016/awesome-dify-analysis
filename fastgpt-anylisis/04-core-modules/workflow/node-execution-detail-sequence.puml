@@ -1,0 +1,433 @@
+@startuml 节点执行详细时序图
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+participant "WorkflowQueue" as Queue
+participant "Node Handler" as Handler
+participant "Variable System" as VarSys
+participant "LLM Provider" as LLM
+participant "Knowledge Base" as KB
+participant "External API" as ExtAPI
+participant "SSE Stream" as SSE
+
+== 节点执行入口 ==
+
+Queue -> Queue: nodeRunWithActive(node)
+activate Queue
+
+Queue -> VarSys: getNodeRunParams(node)
+activate VarSys
+
+note right of VarSys
+  根据节点类型准备参数:
+  1. pluginInput: 转为 object
+  2. 其他: 准备 params + dynamicInput
+end note
+
+loop 遍历节点输入
+  VarSys -> VarSys: 跳过特殊 key\n(childrenNodeIdList, httpJsonBody)
+  
+  VarSys -> VarSys: replaceEditorVariable(text)
+  note right of VarSys
+    替换变量引用:
+    {{$nodeId.outputKey$}} → 节点输出值
+    {{variableName}} → 全局变量值
+  end note
+  
+  VarSys -> VarSys: getReferenceVariableValue(value)
+  note right of VarSys
+    处理引用类型变量:
+    ['a', 'b'] → 数组
+    {x: 1} → 对象
+    WorkflowIOValueTypeEnum → 类型转换
+  end note
+  
+  VarSys -> VarSys: valueTypeFormat(value, valueType)
+  note right of VarSys
+    类型转换:
+    string, number, boolean,
+    object, array*, any
+  end note
+  
+  alt 动态输入
+    VarSys -> VarSys: 存入 params[dynamicKey][inputKey]
+  end
+  
+  VarSys -> VarSys: 存入 params[inputKey]
+end
+
+VarSys --> Queue: params
+deactivate VarSys
+
+Queue -> SSE: flowNodeStatus\n{status: 'running', name}
+activate SSE
+SSE --> SSE: 推送到客户端
+deactivate SSE
+
+== 调用节点处理器 ==
+
+Queue -> Handler: callbackMap[nodeType](dispatchData)
+activate Handler
+
+alt AI 对话节点
+
+  == AI Chat 处理流程 ==
+  
+  Handler -> Handler: dispatchChatCompletion
+  
+  Handler -> Handler: 构建系统提示词
+  note right of Handler
+    systemPrompt + quotePrompt
+    知识库引用格式化
+  end note
+  
+  Handler -> Handler: 构建对话历史
+  note right of Handler
+    取最近 N 条历史
+    转换为 LLM 消息格式
+    [{role, content}, ...]
+  end note
+  
+  Handler -> Handler: 构建用户消息
+  Handler -> Handler: 准备工具列表 (可选)
+  
+  Handler -> LLM: requestChatCompletion\n{model, messages, tools, stream}
+  activate LLM
+  
+  alt 流式模式
+    loop 接收流式块
+      LLM -> Handler: {delta: {content: chunk}}
+      Handler -> SSE: event: answer\ndata: {text: chunk}
+      activate SSE
+      SSE --> SSE: 推送到客户端
+      deactivate SSE
+      Handler -> Handler: 累积完整文本
+    end
+    
+  else 工具调用模式
+    LLM --> Handler: {tool_calls: [...]}
+    Handler -> Handler: runToolWithToolChoice
+    
+    loop 每个工具调用
+      Handler -> Handler: 执行工具逻辑
+      Handler -> Handler: 构建工具响应
+    end
+    
+    Handler -> LLM: 继续对话\n(带工具结果)
+    LLM --> Handler: 最终响应
+  end
+  
+  LLM --> Handler: {content, usage}
+  deactivate LLM
+  
+  Handler -> Handler: 格式化响应
+  Handler -> Handler: 计算消耗积分
+  Handler --> Queue: {assistantResponses, nodeResponse, usage}
+  
+else 知识库检索节点
+
+  == Dataset Search 处理流程 ==
+  
+  Handler -> Handler: dispatchDatasetSearch
+  
+  Handler -> Handler: 准备检索参数
+  note right of Handler
+    - datasets: 知识库列表
+    - query: 用户问题
+    - similarity: 相似度阈值
+    - limit: 返回数量
+    - searchMode: embedding/fullText/hybrid
+  end note
+  
+  alt 查询扩展
+    Handler -> LLM: queryExtension(query)
+    activate LLM
+    LLM --> Handler: [query1, query2, query3]
+    deactivate LLM
+  end
+  
+  loop 每个查询
+    Handler -> KB: searchDataset(query)
+    activate KB
+    
+    KB -> KB: 向量检索\n(embedding similarity)
+    alt 混合检索
+      KB -> KB: 全文检索\n(fulltext search)
+      KB -> KB: 结果融合 (RRF)
+    end
+    
+    KB --> Handler: searchResults[]
+    deactivate KB
+  end
+  
+  Handler -> Handler: 合并去重
+  
+  alt 使用重排序
+    Handler -> KB: rerankResults(results)
+    activate KB
+    KB -> KB: 调用 Rerank 模型
+    KB --> Handler: rankedResults
+    deactivate KB
+  end
+  
+  Handler -> Handler: 格式化引用数据
+  note right of Handler
+    quoteQA: [
+      {q: '问题', a: '答案', source: {...}},
+      ...
+    ]
+  end note
+  
+  Handler -> Handler: 计算消耗积分
+  Handler --> Queue: {quoteQA, nodeResponse}
+  
+else HTTP 请求节点
+
+  == HTTP Request 处理流程 ==
+  
+  Handler -> Handler: dispatchHttp468
+  
+  Handler -> VarSys: replaceStringVariables
+  activate VarSys
+  
+  VarSys -> VarSys: replaceEditorVariable(httpReqUrl)
+  
+  loop httpHeader
+    VarSys -> VarSys: replaceVariables(key, value)
+  end
+  
+  loop httpParams
+    VarSys -> VarSys: replaceVariables(key, value)
+  end
+  
+  alt ContentType = json
+    VarSys -> VarSys: replaceJsonBodyString(httpJsonBody)
+    note right of VarSys
+      深度替换 JSON 字符串中的变量:
+      1. 检测引号内外的变量
+      2. 处理对象/数组类型
+      3. 递归替换嵌套变量
+      4. 防止循环引用
+    end note
+    VarSys -> VarSys: json5.parse(body)
+    
+  else ContentType = formData
+    loop httpFormBody
+      VarSys -> VarSys: replaceVariables(item)
+    end
+    VarSys -> VarSys: new FormData()
+    
+  else ContentType = urlencoded
+    VarSys -> VarSys: new URLSearchParams()
+  end
+  
+  VarSys --> Handler: {url, headers, body, params}
+  deactivate VarSys
+  
+  Handler -> Handler: 验证 URL\n(isInternalAddress)
+  
+  Handler -> ExtAPI: axios({method, url, headers, data, params})
+  activate ExtAPI
+  ExtAPI --> Handler: response
+  deactivate ExtAPI
+  
+  Handler -> Handler: JSONPath 提取结果
+  note right of Handler
+    根据 node.outputs 定义:
+    $.data.list → [...]
+    $.result.name → 'value'
+  end note
+  
+  Handler -> Handler: 格式化输出
+  Handler --> Queue: {data: {...}, nodeResponse}
+  
+else 条件分支节点
+
+  == If-Else 处理流程 ==
+  
+  Handler -> Handler: dispatchIfElse
+  
+  loop ifElseList
+    loop 条件列表
+      Handler -> VarSys: getReferenceVariableValue(variable)
+      activate VarSys
+      VarSys --> Handler: varValue
+      deactivate VarSys
+      
+      Handler -> Handler: compareValues(varValue, operator, value)
+      note right of Handler
+        运算符:
+        ===, !==, >, <, >=, <=
+        includes, notIncludes
+        isEmpty, isNotEmpty
+        startWith, endWith
+        regex
+      end note
+    end
+    
+    Handler -> Handler: 计算条件结果
+    note right of Handler
+      AND: 所有条件为 true
+      OR: 至少一个为 true
+    end note
+    
+    alt 条件满足
+      Handler -> Handler: 获取对应 handle
+      Handler -> Handler: 跳过其他 handle
+      Handler --> Queue: {skipHandleId: [...]}
+      note right: 返回，不继续判断
+    end
+  end
+  
+  Handler -> Handler: 所有条件不满足
+  Handler --> Queue: {skipHandleId: [allConditionHandles]}
+  
+else 循环节点
+
+  == Loop 处理流程 ==
+  
+  Handler -> Handler: dispatchLoopStart
+  
+  Handler -> Handler: 获取数组变量
+  Handler -> Handler: 初始化循环索引
+  Handler -> Handler: 设置循环变量
+  
+  Handler --> Queue: {loopArray, loopIndex, loopItem}
+  
+  note over Queue
+    进入循环体执行
+    ...
+    循环结束后返回 loopEnd
+  end note
+  
+else 交互节点
+
+  == Interactive 处理流程 ==
+  
+  Handler -> Handler: dispatchFormInput / dispatchUserSelect
+  
+  Handler -> Handler: 构建交互参数
+  note right of Handler
+    type: 'formInput' | 'userSelect'
+    params: {
+      description: '...',
+      formInputs: [...] | options: [...]
+    }
+  end note
+  
+  Handler --> Queue: {interactive: {...}}
+  note right: 暂停工作流，等待用户交互
+  
+else 代码沙盒节点
+
+  == Code Sandbox 处理流程 ==
+  
+  Handler -> Handler: dispatchCodeSandbox
+  
+  Handler -> Handler: 准备执行环境
+  Handler -> Handler: 注入变量
+  
+  alt language = javascript
+    Handler -> Handler: 创建 VM 沙盒
+    Handler -> Handler: vm.runInContext(code, context)
+    
+  else language = python
+    Handler -> Handler: 调用 Python 运行时
+    Handler -> Handler: subprocess.run(['python', '-c', code])
+  end
+  
+  Handler -> Handler: 捕获输出和错误
+  Handler --> Queue: {output, error}
+  
+else 子应用/工具节点
+
+  == Run App/Tool 处理流程 ==
+  
+  Handler -> Handler: dispatchRunApp / dispatchRunTool
+  
+  Handler -> Handler: 获取子应用配置
+  Handler -> Handler: 准备输入参数
+  
+  Handler -> Queue: runWorkflow(子应用)
+  note right: 递归调用工作流执行
+  activate Queue
+  Queue --> Handler: 子应用执行结果
+  deactivate Queue
+  
+  Handler -> Handler: 提取输出
+  Handler --> Queue: {toolResponses, nodeResponse}
+  
+end
+
+deactivate Handler
+
+== 处理执行结果 ==
+
+Queue -> Queue: 格式化响应数据
+note right of Queue
+  responseData: {
+    id: nanoid(),
+    nodeId, moduleName, moduleType,
+    runningTime, totalPoints,
+    ...nodeResponse
+  }
+end note
+
+alt version = v2 && isRootRuntime
+  Queue -> SSE: event: flowNodeResponse
+  activate SSE
+  SSE --> SSE: 推送节点响应
+  deactivate SSE
+end
+
+Queue -> Queue: 添加输出默认值
+loop node.outputs
+  alt output.required && value === undefined
+    Queue -> Queue: 设置 output.value = defaultValue
+  end
+end
+
+Queue -> Queue: 更新全局变量
+note right of Queue
+  variables = {
+    ...variables,
+    ...newVariables
+  }
+end note
+
+alt 发生错误
+  Queue -> Queue: addLog.warn('workflow error')
+end
+
+Queue -> Queue: pushStore(result)
+note right of Queue
+  存储到队列:
+  1. chatResponses.push(responseData)
+  2. chatAssistantResponse.concat(assistantResponses)
+  3. chatNodeUsages.concat(nodeDispatchUsages)
+  4. toolRunResponse = toolResponses
+  5. system_memories = {..., ...newMemories}
+  6. 实时写入数据库 (pushChatItemUsage)
+end note
+
+Queue -> Queue: nodeOutput(node, result)
+note right of Queue
+  1. 更新节点输出值
+  2. 获取下一批节点
+  3. 更新边状态
+end note
+
+deactivate Queue
+
+@enduml

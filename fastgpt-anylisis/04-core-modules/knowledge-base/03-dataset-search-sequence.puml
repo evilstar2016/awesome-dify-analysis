@@ -1,0 +1,189 @@
+@startuml 知识库检索流程
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+actor 工作流引擎 as Engine
+participant "检索节点\nDatasetSearch" as Search
+participant "查询扩展" as Extension
+participant "Embedding API" as Embed
+participant "向量数据库" as Vector
+participant "MongoDB" as Mongo
+participant "全文检索" as FullText
+participant "ReRank API" as ReRank
+
+Engine -> Search: dispatchDatasetSearch()\n{query, datasetIds, searchMode}
+activate Search
+
+alt 启用查询扩展
+    Search -> Extension: datasetSearchQueryExtension()
+    activate Extension
+    Extension -> Extension: 构建 LLM Prompt
+    note right
+    系统提示词:
+    "根据用户问题,生成2-3个
+    语义相关的搜索词"
+    end note
+    Extension -> Extension: chatCompletion()\n调用 LLM
+    Extension -> Extension: 解析 JSON 结果\n{queries: [...], reRankQuery}
+    Extension --> Search: {searchQueries, reRankQuery}
+    deactivate Extension
+    note right: queries: ["原查询", "扩展1", "扩展2"]
+end
+
+Search -> Search: filterCollectionByMetadata()\n标签和时间过滤
+note right
+collectionFilterMatch:
+{
+  tags: {$and: [...], $or: [...]},
+  createTime: {$gte, $lte}
+}
+end note
+
+par 并行检索
+
+    alt 向量检索 (embeddingLimit > 0)
+        Search -> Search: 批量生成查询向量
+        loop 每个查询
+            Search -> Embed: getVectorsByText(query)
+            activate Embed
+            Embed --> Search: {vector[1536], tokens}
+            deactivate Embed
+            
+            Search -> Vector: recallFromVectorStore()
+            activate Vector
+            note right
+            PGVector:
+            SELECT data_id,
+              1-(vector <=> $1) as score
+            FROM dataset_vector
+            WHERE dataset_id IN (...)
+            ORDER BY vector <=> $1
+            LIMIT 100
+            
+            Milvus:
+            collection.search({
+              vectors: [query_vector],
+              topk: 100,
+              metric_type: 'COSINE'
+            })
+            end note
+            Vector --> Search: results[]\n{dataId, score}
+            deactivate Vector
+        end
+        Search -> Search: 合并向量检索结果
+    end
+
+    alt 全文检索 (fullTextLimit > 0)
+        Search -> FullText: jiebaSplit(queries)\n中文分词
+        activate FullText
+        FullText --> Search: tokens[]
+        deactivate FullText
+        
+        loop 每个分词查询
+            Search -> Mongo: MongoDB Text Search
+            activate Mongo
+            note right
+            db.dataset_datas.aggregate([
+              {$match: {
+                datasetId: {$in: [...]},
+                $text: {$search: "token1 token2"}
+              }},
+              {$addFields: {
+                score: {$meta: "textScore"}
+              }},
+              {$sort: {score: -1}},
+              {$limit: 100}
+            ])
+            end note
+            Mongo --> Search: results[]\n{dataId, score}
+            deactivate Mongo
+        end
+        Search -> Search: 合并全文检索结果
+    end
+
+end
+
+Search -> Search: datasetSearchResultConcat()\n合并向量+全文结果
+note right
+score = embeddingScore * embeddingWeight +
+        fullTextScore * (1-embeddingWeight)
+
+默认 embeddingWeight = 0.5
+end note
+
+alt 启用 ReRank
+    Search -> ReRank: datasetDataReRank()
+    activate ReRank
+    ReRank -> ReRank: 调用 ReRank API
+    note right
+    POST /rerank
+    {
+      model: "bge-reranker-large",
+      query: reRankQuery,
+      documents: [doc1, doc2, ...]
+    }
+    end note
+    ReRank --> Search: {results[], inputTokens}
+    deactivate ReRank
+    
+    Search -> Search: 合并分数
+    note right
+    finalScore = 
+      originalScore * (1-rerankWeight) +
+      rerankScore * rerankWeight
+    
+    默认 rerankWeight = 0.5
+    end note
+end
+
+Search -> Mongo: 批量获取完整数据
+activate Mongo
+note right
+MongoDatasetData.find({
+  _id: {$in: dataIds}
+})
+.populate('collectionId')
+.select('q a imageId chunkIndex')
+end note
+Mongo --> Search: dataList[]
+deactivate Mongo
+
+Search -> Search: formatDatasetDataValue()\n格式化数据(图片URL、S3签名等)
+
+Search -> Search: filterByMaxTokens()\nToken 过滤
+note right
+按 Token 数累加,
+直到达到 maxTokens 限制
+(默认 3000)
+end note
+
+Search --> Engine: SearchDataResponseItemType[]
+deactivate Search
+note right
+返回结果:
+{
+  searchRes: [{
+    id, q, a, score,
+    datasetId, collectionId,
+    sourceName, sourceId
+  }],
+  embeddingTokens,
+  reRankInputTokens,
+  searchMode,
+  limit,
+  similarity,
+  usingReRank
+}
+end note
+
+@enduml

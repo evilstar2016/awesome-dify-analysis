@@ -1,0 +1,177 @@
+@startuml agent-execution-sequence
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title Agent节点执行流程时序图
+
+actor 用户 as User
+participant "Agent节点" as AgentNode
+participant "dispatchRunTools" as Dispatch
+participant "LLM服务" as LLM
+participant "工具执行器" as ToolExecutor
+participant "工具节点" as ToolNode
+database "向量数据库" as VectorDB
+
+== 初始化阶段 ==
+
+User -> AgentNode: 发送消息\n"FastGPT支持哪些数据源？"
+activate AgentNode
+
+AgentNode -> Dispatch: 执行节点
+activate Dispatch
+
+note right of Dispatch
+  1. 加载LLM模型
+  2. 获取历史记录
+  3. 收集连接的工具节点
+end note
+
+Dispatch -> Dispatch: 获取连接的工具节点
+note right
+  工具节点列表:
+  - datasetSearch
+  - httpRequest
+  - readFiles
+end note
+
+Dispatch -> Dispatch: 构建工具JSON Schema
+note right
+  [
+    {
+      name: "datasetSearch",
+      description: "搜索知识库",
+      parameters: {...}
+    }
+  ]
+end note
+
+== 第一轮LLM调用 ==
+
+Dispatch -> LLM: 调用LLM (带工具定义)
+activate LLM
+note right
+  Request:
+  - messages: [system, history, user]
+  - tools: [工具定义]
+  - tool_choice: "auto"
+end note
+
+LLM -> LLM: 分析用户意图
+note right
+  判断: 需要搜索知识库
+end note
+
+LLM --> Dispatch: 返回function_call
+deactivate LLM
+note left
+  {
+    function_call: {
+      name: "datasetSearch",
+      arguments: {
+        query: "FastGPT数据源",
+        limit: 5
+      }
+    }
+  }
+end note
+
+== 工具执行阶段 ==
+
+Dispatch -> ToolExecutor: 执行工具调用
+activate ToolExecutor
+
+ToolExecutor -> ToolExecutor: 解析function_call
+note right
+  工具: datasetSearch
+  参数: {
+    query: "FastGPT数据源",
+    limit: 5
+  }
+end note
+
+ToolExecutor -> ToolNode: 执行数据集搜索节点
+activate ToolNode
+
+ToolNode -> VectorDB: 向量搜索
+activate VectorDB
+VectorDB --> ToolNode: 返回相关文档
+deactivate VectorDB
+
+ToolNode --> ToolExecutor: 返回搜索结果
+deactivate ToolNode
+note left
+  [
+    {
+      content: "FastGPT支持本地文件、API、网页...",
+      score: 0.92
+    }
+  ]
+end note
+
+ToolExecutor --> Dispatch: 工具执行完成
+deactivate ToolExecutor
+
+== 第二轮LLM调用 ==
+
+Dispatch -> Dispatch: 将工具结果添加到上下文
+note right
+  messages += [
+    {role: "assistant", function_call: {...}},
+    {role: "tool", content: "搜索结果..."}
+  ]
+end note
+
+Dispatch -> LLM: 再次调用LLM\n(带工具结果)
+activate LLM
+
+LLM -> LLM: 基于搜索结果生成回复
+note right
+  分析工具返回的内容
+  组织成自然语言回复
+end note
+
+LLM --> Dispatch: 返回文本响应
+deactivate LLM
+note left
+  {
+    content: "根据知识库，
+    FastGPT支持以下数据源：
+    1. 本地文件
+    2. API接口
+    3. 网页链接
+    ..."
+  }
+end note
+
+== 返回结果 ==
+
+Dispatch --> AgentNode: 返回执行结果
+deactivate Dispatch
+note right
+  {
+    answerText: "AI回复内容",
+    toolDetail: [{
+      toolName: "datasetSearch",
+      params: {...},
+      response: {...}
+    }],
+    tokens: 1500,
+    totalPoints: 120
+  }
+end note
+
+AgentNode --> User: 显示AI回复
+deactivate AgentNode
+
+@enduml

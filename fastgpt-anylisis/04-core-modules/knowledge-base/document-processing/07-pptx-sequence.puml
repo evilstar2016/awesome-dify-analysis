@@ -1,0 +1,129 @@
+@startuml 07-pptx-sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title PPTX 文档解析时序图
+
+participant "Worker 线程" as Worker
+participant "PPTX 解析器" as Parser
+participant "parseOffice" as Office
+participant "decompress" as Decompress
+participant "xmldom" as XML
+participant "文件系统" as FS
+
+Worker -> Parser: readPptxRawText(buffer, encoding)
+activate Parser
+
+Parser -> Office: parseOffice(buffer, encoding, 'pptx')
+activate Office
+
+Office -> FS: 创建临时目录\n/tmp/{nanoid}
+activate FS
+FS --> Office: 目录路径
+deactivate FS
+
+Office -> FS: 写入临时文件\n/tmp/{nanoid}.pptx
+activate FS
+FS --> Office: 文件路径
+deactivate FS
+
+Office -> Decompress: decompress(filepath, decompressPath)
+activate Decompress
+
+note right of Decompress
+  解压 PPTX（ZIP 格式）
+  提取：
+  - ppt/slides/slide*.xml
+  - ppt/notesSlides/notesSlide*.xml
+end note
+
+Decompress -> Decompress: 过滤幻灯片 XML
+
+Decompress --> Office: files[{path, data}]
+deactivate Decompress
+
+Office -> Office: 按幻灯片编号排序\n(slide1.xml, slide2.xml...)
+
+loop 遍历幻灯片 XML
+    Office -> FS: 读取 XML 文件
+    activate FS
+    FS --> Office: XML 内容
+    deactivate FS
+    
+    Office -> XML: parseString(xmlContent)
+    activate XML
+    
+    XML --> Office: DOM 对象
+    deactivate XML
+    
+    Office -> Office: 查找段落节点\ngetElementsByTagName('a:p')
+    
+    loop 遍历段落
+        Office -> Office: 查找文本节点\ngetElementsByTagName('a:t')
+        
+        Office -> Office: 提取文本内容\ntextNode.nodeValue
+        
+        Office -> Office: 拼接段落文本
+    end
+    
+    Office -> Office: 添加换行符\n段落之间
+end
+
+Office -> FS: 删除临时文件\nunlinkSync(filepath)
+activate FS
+deactivate FS
+
+Office -> FS: 清理临时目录\nclearDirFiles(decompressPath)
+activate FS
+deactivate FS
+
+Office --> Parser: 拼接后的文本
+deactivate Office
+
+Parser --> Worker: {rawText}
+deactivate Parser
+
+note over Worker, FS
+  PPTX 结构：
+  presentation.pptx (ZIP)
+  ├── ppt/
+  │   ├── slides/
+  │   │   ├── slide1.xml  # 幻灯片 1
+  │   │   ├── slide2.xml  # 幻灯片 2
+  │   │   └── slide3.xml  # 幻灯片 3
+  │   └── notesSlides/
+  │       └── notesSlide1.xml  # 备注
+  
+  XML 结构：
+  <a:p>  <!-- 段落 -->
+    <a:r>  <!-- 文本运行 -->
+      <a:t>文本内容</a:t>
+    </a:r>
+  </a:p>
+  
+  输出：
+  - rawText: 纯文本（按幻灯片顺序）
+  
+  支持：
+  - 幻灯片文本
+  - 演讲者备注
+  - 表格文本（不保留结构）
+  
+  不支持：
+  - 图片
+  - 图表
+  - 动画
+  - 超链接
+end note
+
+@enduml

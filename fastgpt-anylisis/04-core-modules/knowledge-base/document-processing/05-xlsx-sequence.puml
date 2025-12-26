@@ -1,0 +1,98 @@
+@startuml 05-xlsx-sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title XLSX 表格解析时序图
+
+participant "Worker 线程" as Worker
+participant "XLSX 解析器" as Parser
+participant "node-xlsx" as NodeXlsx
+
+Worker -> Parser: readXlsxRawText(buffer, encoding)
+activate Parser
+
+Parser -> NodeXlsx: xlsx.parse(buffer)
+activate NodeXlsx
+
+NodeXlsx -> NodeXlsx: 解析工作簿结构
+
+loop 遍历工作表
+    NodeXlsx -> NodeXlsx: 读取工作表名称
+    NodeXlsx -> NodeXlsx: 读取单元格数据
+    NodeXlsx -> NodeXlsx: 构建数据数组
+end
+
+NodeXlsx --> Parser: sheets[{name, data}]
+deactivate NodeXlsx
+
+Parser -> Parser: 初始化输出数组\nrawTextArr = []\nformatTextArr = []
+
+loop 遍历工作表
+    Parser -> Parser: 提取表头\n(第一行)
+    
+    Parser -> Parser: 生成 CSV 格式
+    note right of Parser
+      CSV 格式：
+      Name,Age,City
+      Alice,30,Beijing
+      Bob,25,Shanghai
+    end note
+    
+    Parser -> Parser: 生成 Markdown 表格
+    note right of Parser
+      Markdown 格式：
+      | Name | Age | City |
+      | --- | --- | --- |
+      | Alice | 30 | Beijing |
+      | Bob | 25 | Shanghai |
+    end note
+    
+    Parser -> Parser: 添加到输出数组
+end
+
+Parser -> Parser: 用分隔符连接工作表
+note right of Parser
+  分隔符：
+  "\n\n-------\n\n"
+  
+  用于分隔多个工作表
+end note
+
+Parser --> Worker: {rawText: csv, formatText: markdown}
+deactivate Parser
+
+note over Worker, NodeXlsx
+  输出：
+  - rawText: CSV 格式（所有工作表）
+  - formatText: Markdown 表格（所有工作表）
+  
+  支持特性：
+  - 多工作表
+  - 公式计算结果
+  - 合并单元格展开
+  
+  不支持：
+  - 公式本身
+  - 格式样式
+  - 图表
+  - 图片
+  
+  示例输出：
+  Sheet1 数据
+  -------
+  Sheet2 数据
+  -------
+  Sheet3 数据
+end note
+
+@enduml
