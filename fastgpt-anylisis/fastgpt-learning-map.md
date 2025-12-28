@@ -247,10 +247,6 @@ sequenceDiagram
 
 ---
 
-## 后续操作选项
-- 我可以为你执行 git 提交（`git add`/`git commit -m "add fastgpt learning map"`）并推送到远端，需要我现在提交吗？
-
----
-
-> 文件已更新：`fastgpt-anylisis/fastgpt-learning-map.md`
+## 写在最后
+后续我会稳定更新该项目的深度解析文章，感兴趣记得关注～
 
