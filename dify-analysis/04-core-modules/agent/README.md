@@ -66,7 +66,7 @@ AgentRunner（Agent执行器）
 
 ## 📖 完整版内容
 
-关注公众号 **「AI架构解析」**，回复 **"Agent"** 获取：
+关注公众号 **「柒叔代码阁」**，回复 **"Agent"** 获取：
 
 - 🔍 AgentRunner 源码逐行解读（4000字）
 - 🛠️ 如何实现自定义 Agent 策略
@@ -74,7 +74,7 @@ AgentRunner（Agent执行器）
 - ⚠️ Agent 执行失败的 5 种场景及解决方案
 - 🎯 企业级 Multi-Agent 协作案例
 
-<!-- ![公众号二维码](../../qrcode.png) -->
+![公众号二维码](../../qrcode.png)
 
 ---
 
