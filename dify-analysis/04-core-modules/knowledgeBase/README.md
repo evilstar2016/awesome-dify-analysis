@@ -1,114 +1,38 @@
 # KnowledgeBase 知识库模块
 
-> 📚 Dify 知识库与 RAG（检索增强生成）系统的完整实现
+## 模块概述
 
-## 📋 本模块内容
+KnowledgeBase 是 Dify 的知识库与 RAG（检索增强生成）系统，负责文档的解析、分片、向量化、索引和检索。支持多种文档格式（PDF、Word、Excel、Notion 等），集成多种向量数据库，提供灵活的检索策略和 Rerank 优化。
 
-本模块深入分析 Dify 的知识库系统，包括：
+**核心代码位置**：`api/core/rag/`
 
-- 知识库架构与数据流转
-- 文档处理与分片策略
-- 向量化与索引构建
-- RAG 检索与召回优化
-- 多种向量数据库集成
+## 目录文件说明
 
-## 🏗️ 架构概览
+### 主目录文件
 
-### 核心流程
+| 文件名 | 描述 |
+|--------|------|
+| [index_method.md](./index_method.md) | 索引方法说明文档 |
+| [index_compare.md](./index_compare.md) | 索引方法对比分析 |
+| [rerank_logic.md](./rerank_logic.md) | Rerank 重排序逻辑说明 |
 
-```
-文档上传 → 解析 → 分片 → 向量化 → 存储 → 检索 → 召回
-```
+### document_process 子目录
 
-### 关键组件
-```
-KnowledgeBase（知识库）
-    ├── DocumentParser（文档解析器）
-    ├── TextSplitter（文本分片器）
-    ├── EmbeddingProvider（向量化服务）
-    ├── VectorStore（向量存储）
-    └── Retriever（检索器）
-```
+| 文件名 | 描述 |
+|--------|------|
+| [dify_document_types_analysis.md](./document_process/dify_document_types_analysis.md) | Dify 支持的文档类型分析 |
+| [pdf_processing_technical_analysis.md](./document_process/pdf_processing_technical_analysis.md) | PDF 文档处理技术分析 |
+| [word_document_processing_analysis.md](./document_process/word_document_processing_analysis.md) | Word 文档处理分析 |
+| [online_document_import_analysis.md](./document_process/online_document_import_analysis.md) | 在线文档导入分析 |
+| [pdf_document_import_sequence.puml](./document_process/pdf_document_import_sequence.puml) | PDF 文档导入时序图 |
+| [word_document_import_flow.puml](./document_process/word_document_import_flow.puml) | Word 文档导入流程图 |
+| [excel_document_processing_flow.puml](./document_process/excel_document_processing_flow.puml) | Excel 文档处理流程图 |
+| [excel_import_flow.puml](./document_process/excel_import_flow.puml) | Excel 导入流程图 |
+| [notion_integration_flow.puml](./document_process/notion_integration_flow.puml) | Notion 集成流程图 |
+| [online_document_import_flow.puml](./document_process/online_document_import_flow.puml) | 在线文档导入流程图 |
 
-## 🎯 核心能力
+## 相关模块
 
-### 1. 文档处理
-- **支持格式**：PDF、Word、Markdown、TXT、HTML
-- **解析策略**：规则解析、OCR、表格提取
-- **文本清洗**：去除噪声、格式化
-
-### 2. 分片策略
-- **固定长度分片**：按字符或 Token 数切分
-- **语义分片**：按段落、章节切分
-- **递归分片**：保留上下文的智能切分
-- **自定义分片**：用户自定义分片规则
-
-### 3. 向量化
-- **Embedding 模型**：OpenAI、本地模型
-- **批量处理**：高效的批量向量化
-- **缓存机制**：避免重复计算
-
-### 4. 检索策略
-- **语义检索**：基于向量相似度
-- **关键词检索**：BM25 等传统检索
-- **混合检索**：语义 + 关键词
-- **重排序**：使用 Rerank 模型优化结果
-
-## 📊 向量数据库支持
-
-- Weaviate
-- Qdrant
-- Milvus
-- Pinecone
-- PostgreSQL (pgvector)
-- Chroma
-
----
-
-## 📊 深度内容
-
-| 维度 | 本文档（GitHub） | 完整版（公众号） |
-|------|----------------|----------------|
-| 架构设计 | ✅ 完整流程 | ✅ + 架构演进历史 |
-| 文档处理 | ⚠️ 支持格式说明 | ✅ PDF 复杂布局处理源码 |
-| 分片策略 | ✅ 策略类型 | ✅ 各种策略的性能对比 |
-| 向量化 | ⚠️ 基本流程 | ✅ Embedding 性能优化实战 |
-| 检索优化 | ❌ | ✅ RAG 召回率优化指南 |
-| 实战案例 | ❌ | ✅ 企业知识库最佳实践 |
-
-## 📖 完整版内容
-
-关注公众号 **「柒叔代码阁」**，回复 **"知识库"** 或 **"RAG"** 获取：
-
-### 🔍 深度源码解读
-- DocumentParser 文档解析核心代码（2000字）
-- TextSplitter 分片算法实现（1500字）
-- Retriever 检索策略源码（2000字）
-- 向量数据库适配层设计（1000字）
-
-### ⚡ RAG 性能优化
-- 如何提升检索准确率（Recall@K）
-- 分片策略对检索效果的影响
-- Embedding 模型选型指南
-- 向量数据库性能对比与调优
-
-### ⚠️ 生产环境避坑
-- 大文档处理的内存优化
-- 向量数据库选型的 5 个关键因素
-- 检索结果不准确的 6 种原因
-- 知识库更新的一致性保证
-
-### 🎯 企业级实战
-- 百万级文档的知识库架构
-- 多租户知识库隔离方案
-- 知识库增量更新策略
-- RAG 评估与监控体系
-
-![公众号二维码](../../qrcode.png)
-
----
-
-📌 **相关模块**
-- [Workflow 工作流](../workflow/) - 知识检索节点
-- [第三方集成](../../06-third-party/) - 向量数据库集成
-- [Model Runtime](../model_runtime/) - Embedding 模型
+- [Model Runtime](../model_runtime/) - Embedding 模型集成
+- [Workflow 工作流](../workflow/) - 知识库检索节点
+- [Agent 智能体](../agent/) - Agent 工具集成
