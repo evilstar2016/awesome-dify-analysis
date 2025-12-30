@@ -1,0 +1,185 @@
+@startuml Prompt_Module_Class_Diagram
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam classBorderColor #6C757D
+skinparam classBorderThickness 2
+skinparam classBackgroundColor #FFFFFF
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam arrowColor #1976D2
+skinparam stereotypeCBackgroundColor #E3F2FD
+
+title Dify Prompt 管理模块类图
+
+package "core.prompt" {
+    
+    abstract class PromptTransform {
+        --Methods--
+        #_append_chat_histories(memory, memory_config, prompt_messages, model_config): list[PromptMessage]
+        #_calculate_rest_token(prompt_messages, model_config): int
+        #_get_history_messages_from_memory(memory, memory_config, max_token_limit, human_prefix, ai_prefix): str
+        #_get_history_messages_list_from_memory(memory, memory_config, max_token_limit): list[PromptMessage]
+    }
+    
+    class SimplePromptTransform {
+        --Methods--
+        +get_prompt(app_mode, prompt_template_entity, inputs, query, files, context, memory, model_config, image_detail_config): tuple[list[PromptMessage], list[str]]
+        +get_prompt_template(app_mode, provider, model, pre_prompt, has_context, query_in_prompt, with_memory_prompt): dict
+        -_get_prompt_str_and_rules(app_mode, model_config, pre_prompt, inputs, query, context, histories): tuple[str, dict]
+        -_get_chat_model_prompt_messages(...): tuple[list[PromptMessage], list[str]]
+        -_get_completion_model_prompt_messages(...): tuple[list[PromptMessage], list[str]]
+        -_get_last_user_message(prompt, files, image_detail_config): UserPromptMessage
+        -_get_prompt_rule(app_mode, provider, model): dict
+        -_prompt_file_name(app_mode, provider, model): str
+    }
+    
+    class AdvancedPromptTransform {
+        --Attributes--
+        -with_variable_tmpl: bool
+        -image_detail_config: ImagePromptMessageContent.DETAIL
+        --Methods--
+        +__init__(with_variable_tmpl, image_detail_config)
+        +get_prompt(prompt_template, inputs, query, files, context, memory_config, memory, model_config, image_detail_config): list[PromptMessage]
+        -_get_completion_model_prompt_messages(...): list[PromptMessage]
+        -_get_chat_model_prompt_messages(...): list[PromptMessage]
+        -_set_context_variable(context, parser, prompt_inputs): Mapping[str, str]
+        -_set_query_variable(query, parser, prompt_inputs): Mapping[str, str]
+        -_set_histories_variable(memory, memory_config, raw_prompt, role_prefix, parser, prompt_inputs, model_config): Mapping[str, str]
+    }
+    
+    class AgentHistoryPromptTransform {
+        --Attributes--
+        -model_config: ModelConfigWithCredentialsEntity
+        -prompt_messages: list[PromptMessage]
+        -history_messages: list[PromptMessage]
+        -memory: TokenBufferMemory | None
+        --Methods--
+        +__init__(model_config, prompt_messages, history_messages, memory)
+        +get_prompt(): list[PromptMessage]
+    }
+    
+    PromptTransform <|-- SimplePromptTransform
+    PromptTransform <|-- AdvancedPromptTransform
+    PromptTransform <|-- AgentHistoryPromptTransform
+}
+
+package "core.prompt.entities" {
+    
+    class ChatModelMessage <<Pydantic>> {
+        +text: str
+        +role: PromptMessageRole
+        +edition_type: Literal["basic", "jinja2"] | None
+    }
+    
+    class CompletionModelPromptTemplate <<Pydantic>> {
+        +text: str
+        +edition_type: Literal["basic", "jinja2"] | None
+    }
+    
+    class MemoryConfig <<Pydantic>> {
+        +role_prefix: RolePrefix | None
+        +window: WindowConfig
+        +query_prompt_template: str | None
+    }
+    
+    class "MemoryConfig.RolePrefix" as RolePrefix <<Pydantic>> {
+        +user: str
+        +assistant: str
+    }
+    
+    class "MemoryConfig.WindowConfig" as WindowConfig <<Pydantic>> {
+        +enabled: bool
+        +size: int | None
+    }
+    
+    MemoryConfig *-- RolePrefix
+    MemoryConfig *-- WindowConfig
+}
+
+package "core.prompt.utils" {
+    
+    class PromptTemplateParser {
+        --Attributes--
+        -template: str
+        -with_variable_tmpl: bool
+        -regex: Pattern
+        -variable_keys: list[str]
+        --Methods--
+        +__init__(template, with_variable_tmpl)
+        +extract(): list[str]
+        +format(inputs, remove_template_variables): str
+        {static} +remove_template_variables(text, with_variable_tmpl): str
+    }
+    
+    class PromptMessageUtil {
+        --Methods--
+        {static} +prompt_messages_to_prompt_for_saving(model_mode, prompt_messages): list[dict]
+    }
+    
+    class "<<function>>\nextract_thread_messages" as extract_thread_messages {
+        +extract_thread_messages(messages): list[Message]
+    }
+    
+    class "<<function>>\nget_thread_messages_length" as get_thread_messages_length {
+        +get_thread_messages_length(conversation_id): int
+    }
+}
+
+package "core.memory" {
+    
+    class TokenBufferMemory {
+        --Attributes--
+        -conversation: Conversation
+        -model_instance: ModelInstance
+        --Methods--
+        +get_history_prompt_messages(max_token_limit, message_limit): Sequence[PromptMessage]
+        +get_history_prompt_text(max_token_limit, human_prefix, ai_prefix, message_limit): str
+        -_build_prompt_message_with_files(...): PromptMessage
+    }
+}
+
+package "core.model_runtime.entities" {
+    
+    abstract class PromptMessage {
+        +role: PromptMessageRole
+        +content: str | list
+    }
+    
+    class SystemPromptMessage
+    class UserPromptMessage
+    class AssistantPromptMessage
+    
+    PromptMessage <|-- SystemPromptMessage
+    PromptMessage <|-- UserPromptMessage
+    PromptMessage <|-- AssistantPromptMessage
+}
+
+' 关系
+SimplePromptTransform ..> PromptTemplateParser : uses
+AdvancedPromptTransform ..> PromptTemplateParser : uses
+AdvancedPromptTransform ..> ChatModelMessage : uses
+AdvancedPromptTransform ..> CompletionModelPromptTemplate : uses
+AdvancedPromptTransform ..> MemoryConfig : uses
+
+PromptTransform ..> TokenBufferMemory : uses
+PromptTransform ..> MemoryConfig : uses
+PromptTransform ..> PromptMessage : produces
+
+TokenBufferMemory ..> extract_thread_messages : uses
+
+note right of SimplePromptTransform
+    用于 Chatbot 基础模式
+    从 JSON 模板文件加载规则
+end note
+
+note right of AdvancedPromptTransform
+    用于 Workflow LLM 节点
+    支持 Basic 和 Jinja2 模板
+end note
+
+note right of AgentHistoryPromptTransform
+    用于 Agent 应用
+    智能裁剪历史消息
+end note
+
+@enduml

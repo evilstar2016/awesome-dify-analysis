@@ -1,0 +1,348 @@
+@startuml Dify知识问答场景-上下文工程应用流程
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title **Dify 知识问答场景 - 上下文工程应用流程**
+
+actor "用户" as User
+participant "前端\nPromptEditor" as Frontend #LightBlue
+participant "后端API\nAdvancedChatAppGenerator" as API #LightGreen
+participant "知识检索节点\nKnowledgeRetrievalNode" as KnowledgeNode #LightCoral
+participant "向量检索\nDatasetRetrieval" as Retrieval #LightSalmon
+participant "向量数据库\nVectorDB" as VectorDB #LightYellow
+participant "Prompt转换器\nAdvancedPromptTransform" as PromptTransform #LightPink
+participant "LLM节点\nLLMNode" as LLM #Lavender
+
+== **第一阶段：用户输入与上下文变量准备** ==
+
+User -> Frontend: 输入问题\n"介绍一下Dify的RAG功能"
+note right of Frontend
+  用户在可视化编辑器中：
+  1. 输入查询文本
+  2. 可插入 {{#context#}} 占位符
+  3. 可插入 {{#histories#}} 对话历史
+  4. 可插入自定义变量
+end note
+
+Frontend -> API: POST /chat-messages\n{query, conversation_id, inputs}
+activate API
+
+API -> API: 初始化 ApplicationGenerateEntity
+note right
+  创建应用生成实体：
+  • task_id
+  • query（用户问题）
+  • conversation_id
+  • inputs（输入变量）
+  • files（文件列表）
+end note
+
+API -> API: 启动 Workflow Runner
+note right
+  工作流执行器创建：
+  • GraphRuntimeState（运行时状态）
+  • VariablePool（变量池）
+  • SystemVariables（系统变量）
+end note
+
+== **第二阶段：知识库检索 - 构建上下文** ==
+
+API -> KnowledgeNode: execute(query)
+activate KnowledgeNode
+note right of KnowledgeNode
+  **上下文工程关键步骤 1**
+  从用户问题中提取检索需求
+end note
+
+KnowledgeNode -> KnowledgeNode: 提取查询变量\n从 VariablePool
+note right
+  变量池包含：
+  • sys.query（用户原始问题）
+  • sys.conversation_id
+  • sys.user_id
+  • 自定义输入变量
+end note
+
+KnowledgeNode -> Retrieval: retrieve(\nquery="介绍一下Dify的RAG功能",\ndataset_ids=[...],\ntop_k=4,\nrerank=true\n)
+activate Retrieval
+
+Retrieval -> Retrieval: 元数据过滤（可选）
+note right
+  **上下文工程优化 1: 元数据过滤**
+  
+  支持三种模式：
+  1. disabled - 不过滤
+  2. automatic - LLM自动提取过滤条件
+  3. manual - 手动配置过滤规则
+  
+  示例：自动提取
+  Query: "2023年的产品文档"
+  → metadata_filters: {
+      "year": 2023,
+      "type": "product_doc"
+    }
+end note
+
+alt 启用元数据自动过滤
+    Retrieval -> LLM: invoke(\nprompt="从查询中提取元数据",\nquery=query,\nmetadata_fields=[...]
+    LLM --> Retrieval: 返回过滤条件\n{"metadata_map": [...]}
+end
+
+Retrieval -> VectorDB: 向量检索
+note right
+  **检索策略：**
+  
+  1. **Single模式（多数据集路由）**
+     • 使用LLM选择最相关数据集
+     • Function Calling或ReAct路由
+  
+  2. **Multiple模式（多数据集合并）**
+     • 并行检索多个数据集
+     • 支持混合检索(向量+关键词)
+     • 加权合并(vector_weight + keyword_weight)
+end note
+
+VectorDB --> Retrieval: 返回候选文档列表\n[doc1, doc2, doc3, ...]
+note left
+  每个文档包含：
+  • content（内容）
+  • score（相关性得分）
+  • metadata（元数据）
+  • dataset_id
+  • document_id
+end note
+
+alt 启用Reranking
+    Retrieval -> Retrieval: 重排序(Rerank Model)
+    note right
+      **上下文工程优化 2: 重排序**
+      
+      使用专门的重排序模型：
+      • Cohere Rerank
+      • Jina Rerank
+      • 本地 BGE Reranker
+      
+      提升相关性排序质量
+    end note
+end
+
+Retrieval -> Retrieval: 按分数排序 & Top-K过滤
+note right
+  **上下文工程优化 3: 质量控制**
+  
+  • score_threshold: 0.7（示例）
+  • top_k: 4
+  • 只保留高质量文档
+end note
+
+Retrieval --> KnowledgeNode: 返回格式化结果
+deactivate Retrieval
+
+note right of KnowledgeNode
+  **构建的上下文字符串：**
+  
+  question: 什么是RAG?
+  answer: RAG是检索增强生成...
+  
+  question: Dify支持哪些向量数据库?
+  answer: 支持Weaviate, Qdrant...
+  
+  Dify的RAG系统具有以下特点：
+  1. 多种检索策略
+  2. 支持重排序
+  3. 元数据过滤
+  ...
+end note
+
+KnowledgeNode --> API: 输出上下文\noutputs: {\n  result: [检索结果数组]\n}
+deactivate KnowledgeNode
+
+== **第三阶段：Prompt 组装 - 上下文注入** ==
+
+API -> LLM: execute(prompt_template, context)
+activate LLM
+
+LLM -> PromptTransform: get_prompt(\nprompt_template,\ninputs,\nquery,\ncontext,\nmemory\n)
+activate PromptTransform
+
+note right of PromptTransform
+  **上下文工程关键步骤 2**
+  
+  Prompt模板示例：
+  ```
+  你是一个专业的AI助手。
+  
+  背景知识：
+  {{#context#}}
+  
+  对话历史：
+  {{#histories#}}
+  
+  用户问题：
+  {{#query#}}
+  
+  请基于背景知识回答用户问题。
+  ```
+end note
+
+PromptTransform -> PromptTransform: 解析模板变量
+note right
+  **PromptTemplateParser**
+  
+  识别的特殊变量：
+  • {{#context#}} - 知识库上下文
+  • {{#histories#}} - 对话历史
+  • {{#query#}} - 用户查询
+  • {{自定义变量}} - 输入变量
+end note
+
+PromptTransform -> PromptTransform: _set_context_variable()
+note right
+  **上下文变量注入：**
+  
+  ```python
+  if '#context#' in parser.variable_keys:
+      if context:
+          prompt_inputs['#context#'] = context
+      else:
+          prompt_inputs['#context#'] = ""
+  ```
+  
+  将检索结果字符串注入模板
+end note
+
+alt 存在对话历史
+    PromptTransform -> PromptTransform: _set_histories_variable()
+    note right
+      **上下文工程优化 4: 对话历史管理**
+      
+      从 TokenBufferMemory 获取历史：
+      • 限制 Token 数量（max_token_limit）
+      • 限制消息数量（message_limit）
+      • 保留最近 N 轮对话
+      
+      格式化为：
+      Human: 之前的问题1
+      Assistant: 之前的回答1
+      Human: 之前的问题2
+      Assistant: 之前的回答2
+    end note
+end
+
+PromptTransform -> PromptTransform: _set_query_variable()
+note right
+  注入当前用户问题
+end note
+
+PromptTransform -> PromptTransform: parser.format(prompt_inputs)
+note right
+  **最终组装的Prompt:**
+  
+  你是一个专业的AI助手。
+  
+  背景知识：
+  question: 什么是RAG?
+  answer: RAG是检索增强生成...
+  question: Dify支持哪些向量数据库?
+  answer: 支持Weaviate, Qdrant...
+  Dify的RAG系统具有以下特点：...
+  
+  对话历史：
+  Human: 之前问过的问题
+  Assistant: 之前的回答
+  
+  用户问题：
+  介绍一下Dify的RAG功能
+  
+  请基于背景知识回答用户问题。
+end note
+
+PromptTransform --> LLM: 返回 PromptMessages
+deactivate PromptTransform
+
+== **第四阶段：LLM生成与流式输出** ==
+
+LLM -> LLM: invoke_llm(\nprompt_messages,\nmodel_parameters,\nstop,\nstream=True\n)
+
+note right of LLM
+  **上下文工程优化 5: Token管理**
+  
+  1. 计算剩余Token容量
+  2. 优先保证 system prompt
+  3. 动态裁剪 context 和 histories
+  4. 避免超出模型上下文窗口
+end note
+
+LLM -> LLM: 调用 OpenAI/Claude/等 API
+activate LLM #DarkGray
+
+loop 流式生成
+    LLM --> API: yield text_chunk
+    API --> Frontend: SSE: {"event": "message",\n"answer": "Dify的RAG功能..."}
+    Frontend --> User: 实时显示答案
+end
+
+deactivate LLM
+
+LLM --> API: 生成完成\nusage: {total_tokens, ...}
+deactivate LLM
+
+== **第五阶段：结果存储与反馈** ==
+
+API -> API: 保存消息到数据库
+note right
+  存储内容：
+  • 用户问题
+  • 检索到的上下文（metadata）
+  • LLM生成的答案
+  • Token使用量
+  • 对话历史记录
+end note
+
+API -> API: 更新 Conversation
+note right
+  **上下文工程优化 6: 持续学习**
+  
+  记录检索质量指标：
+  • 命中的文档
+  • 相关性得分
+  • 用户反馈
+  
+  用于优化：
+  • 调整检索策略
+  • 优化Embedding模型
+  • 改进Prompt模板
+end note
+
+API --> Frontend: 完成响应
+deactivate API
+
+Frontend --> User: 显示完整答案\n+ 引用来源文档（可选）
+
+note over User, LLM
+  **上下文工程核心优势总结：**
+  
+  1️⃣ **动态上下文构建** - 根据用户问题实时检索相关知识
+  2️⃣ **多层次过滤优化** - 元数据过滤 → 向量检索 → 重排序 → Top-K
+  3️⃣ **智能Prompt组装** - 模板变量 + 上下文注入 + 历史管理
+  4️⃣ **Token智能管理** - 动态裁剪，避免超出上下文窗口
+  5️⃣ **质量追踪反馈** - 记录检索效果，持续优化
+  
+  **效果：**
+  • 提高回答准确性（基于知识库而非幻觉）
+  • 保持对话连贯性（历史上下文）
+  • 可追溯性（引用来源）
+  • 高效Token使用（动态裁剪）
+end note
+
+@enduml

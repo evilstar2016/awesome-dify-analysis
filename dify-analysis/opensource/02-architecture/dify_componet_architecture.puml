@@ -1,0 +1,254 @@
+@startuml Dify完整组件架构图
+!theme plain
+skinparam componentStyle rectangle
+skinparam backgroundColor white
+skinparam Package { 
+  BackgroundColor LightGray
+  FontColor Blue
+}
+skinparam component {
+  BackgroundColor LightBlue
+  BorderColor Black
+  ArrowColor Black
+  FontColor DarkBlue
+}
+skinparam note {
+  backgroundColor LightYellow
+}
+
+title Dify LLM应用开发平台 - 完整组件架构图
+
+' 定义容器层
+package "前端层 (Frontend Layer)" as FrontendLayer {
+  component "Next.js App Router" as NextApp {
+    component "页面组件 (Pages)" as Pages
+    component "UI组件库 (Components)" as Components  
+    component "React Hooks" as Hooks
+    component "Context状态管理" as Context
+  }
+  
+  component "服务层 (Service Layer)" as ServiceLayer {
+    component "API客户端 (API Client)" as APIClient
+    component "应用服务 (Apps Service)" as AppsService
+    component "工作流服务 (Workflow Service)" as WebWorkflowService
+    component "数据集服务 (Dataset Service)" as WebDatasetService
+    component "插件服务 (Plugin Service)" as WebPluginService
+    component "认证服务 (Auth Service)" as WebAuthService
+  }
+  
+  component "工具层 (Utils)" as WebUtils {
+    component "HTTP客户端" as HTTPClient
+    component "类型定义 (TypeScript Types)" as Types
+    component "国际化 (i18n)" as I18n
+    component "主题系统 (Themes)" as Themes
+  }
+}
+
+package "后端层 (Backend Layer)" as BackendLayer {
+  ' API网关层
+  package "API网关层 (API Gateway)" as APIGateway {
+    component "Flask应用入口 (DifyApp)" as FlaskApp {
+      component "应用工厂 (App Factory)" as AppFactory
+      component "中间件 (Middleware)" as Middleware
+      component "扩展初始化 (Extensions)" as Extensions
+    }
+    
+    component "控制器层 (Controllers)" as Controllers {
+      component "控制台API (Console API)" as ConsoleAPI
+      component "服务API (Service API)" as ServiceAPI  
+      component "Web API" as WebAPI
+      component "文件API (File API)" as FileAPI
+      component "内部API (Inner API)" as InnerAPI
+    }
+  }
+
+  ' 服务层
+  package "应用服务层 (Application Service Layer)" as AppServiceLayer {
+    component "认证授权 (Auth & Authorization)" as AuthService {
+      component "OAuth服务器" as OAuthServer
+      component "Web应用认证" as WebappAuth
+      component "API密钥管理" as APIKeyManager
+      component "权限控制" as AccessControl
+    }
+    
+    component "业务服务 (Business Services)" as BusinessServices {
+      component "账户服务" as AccountService
+      component "对话服务" as ConversationService
+      component "消息服务" as MessageService
+      component "数据集服务" as DatasetService
+      component "知识库服务" as KnowledgeService
+      component "文件服务" as FileService
+      component "标签服务" as TagService
+      component "操作服务" as OperationService
+    }
+    
+    component "工作流服务 (Workflow Services)" as WorkflowServices {
+      component "工作流应用服务" as WorkflowAppService
+      component "工作流运行服务" as WorkflowRunService
+      component "工作流草稿服务" as WorkflowDraftService
+      component "变量截断服务" as VariableTruncatorService
+    }
+  }
+  
+  ' 核心业务层
+  package "核心业务层 (Core Business Layer)" as CoreLayer {
+    component "应用管理 (App Management)" as AppManagement {
+      component "应用服务 (App Service)" as AppService
+      component "应用配置服务" as AppConfigService
+      component "应用生成服务" as AppGenerateService
+    }
+    
+    component "工作流引擎 (Workflow Engine)" as WorkflowEngine {
+      component "工作流入口 (Workflow Entry)" as WorkflowEntry
+      component "图引擎 (Graph Engine)" as GraphEngine
+      component "节点执行器 (Node Executors)" as NodeExecutors
+      component "变量池 (Variable Pool)" as VariablePool
+      component "运行时状态 (Runtime State)" as RuntimeState
+    }
+    
+    component "模型运行时 (Model Runtime)" as ModelRuntime {
+      component "模型提供商 (Model Providers)" as ModelProviders
+      component "模型管理器 (Model Manager)" as ModelManager
+      component "提供商管理器" as ProviderManager
+      component "负载均衡服务" as LoadBalancingService
+    }
+    
+    component "RAG系统 (RAG System)" as RAGSystem {
+      component "文档处理器 (Document Processor)" as DocumentProcessor
+      component "向量检索器 (Vector Retriever)" as VectorRetriever
+      component "重排序器 (Reranker)" as Reranker
+      component "嵌入服务 (Embedding Service)" as EmbeddingService
+      component "文档存储 (Document Store)" as DocumentStore
+    }
+    
+    component "智能体系统 (Agent System)" as AgentSystem {
+      component "基础智能体运行器" as BaseAgentRunner
+      component "CoT智能体运行器" as CoTAgentRunner
+      component "FC智能体运行器" as FCAgentRunner
+      component "输出解析器" as OutputParser
+      component "策略管理器" as StrategyManager
+    }
+    
+    component "插件系统 (Plugin System)" as PluginSystem {
+      component "代码插件管理" as CodePluginManager
+      component "API插件管理" as APIPluginManager
+      component "插件仓库" as PluginRepository
+      component "插件运行时" as PluginRuntime
+    }
+    
+    component "工具系统 (Tool System)" as ToolSystem {
+      component "内置工具" as BuiltinTools
+      component "外部工具" as ExternalTools
+      component "工具提供商" as ToolProviders
+      component "工具调用器" as ToolInvoker
+    }
+    
+    component "MCP系统 (Model Context Protocol)" as MCPSystem {
+      component "MCP服务器管理" as MCPServerManager
+      component "MCP客户端" as MCPClient
+      component "协议适配器" as ProtocolAdapter
+    }
+  }
+  
+  
+  ' 基础设施层
+  package "基础设施层 (Infrastructure Layer)" as InfraLayer {
+    component "数据访问层 (Data Access)" as DataAccess {
+      component "仓储模式 (Repositories)" as Repositories
+      component "数据模型 (Models)" as Models
+      component "数据库迁移 (Migrations)" as Migrations
+    }
+    
+    component "消息队列 (Message Queue)" as MessageQueue {
+      component "Celery任务队列" as CeleryTasks
+      component "后台作业" as BackgroundJobs
+      component "定时任务" as ScheduledTasks
+    }
+    
+    component "监控观测 (Observability)" as Observability {
+      component "日志系统" as LoggingSystem
+      component "指标收集" as MetricsCollection
+      component "链路追踪" as Tracing
+      component "告警系统" as AlertSystem
+    }
+
+    component "外部集成 (External Integration)" as ExternalIntegration {
+      component "向量数据库集成" as VectorDBIntegration
+      component "云存储集成" as CloudStorageIntegration
+      component "第三方API集成" as ThirdPartyAPIIntegration
+    }
+  }
+}
+
+package "外部依赖 (External Dependencies)" as ExternalDeps {
+  database "PostgreSQL" as PostgreDB
+  database "Redis" as RedisDB
+  database "向量数据库" as VectorDB
+  cloud "云存储" as CloudStorage
+  component "LLM提供商" as LLMProviders
+  component "第三方服务" as ThirdPartyServices
+}
+
+' 定义连接关系
+NextApp --> ServiceLayer : "API调用"
+ServiceLayer --> APIClient : "HTTP请求"
+APIClient --down--> Controllers : "REST API"
+
+Controllers --down--> AppServiceLayer : "业务逻辑调用"
+AppServiceLayer --down--> CoreLayer : "核心功能调用"
+
+' 核心层内部连接
+WorkflowEngine --down--> ModelRuntime : "模型调用"
+WorkflowEngine --down--> RAGSystem : "知识检索"  
+WorkflowEngine --up--> AgentSystem : "智能体执行"
+WorkflowEngine --down--> ToolSystem : "工具调用"
+WorkflowEngine --down--> PluginSystem : "插件执行"
+
+' 智能体的双向调用能力
+AgentSystem --down--> ModelRuntime : "模型推理"
+AgentSystem --down--> ToolSystem : "工具使用"
+AgentSystem --> WorkflowEngine : "调用工作流"
+AgentSystem --down--> PluginSystem : "调用插件"
+
+' 工具系统支持工作流作为工具
+ToolSystem --up--> WorkflowEngine : "工作流作为工具"
+
+RAGSystem --> VectorDB : "向量存储"
+RAGSystem --down--> ModelRuntime : "嵌入模型"
+
+PluginSystem --right--> MCPSystem : "MCP协议"
+
+' 基础设施连接
+CoreLayer --down--> DataAccess : "数据持久化"
+CoreLayer --down--> MessageQueue : "异步任务"
+CoreLayer --down--> Observability : "监控日志"
+
+DataAccess --down--> PostgreDB : "主数据库"
+DataAccess --down--> RedisDB : "缓存存储"
+ExternalIntegration --down--> CloudStorage : "文件存储"
+ExternalIntegration --down--> VectorDB : "向量存储"
+ModelRuntime --down--> LLMProviders : "AI模型"
+
+' 异步任务流
+MessageQueue --> CoreLayer : "任务执行"
+
+' 前端到后端完整链路
+' Pages --> APIClient : "用户交互"
+' APIClient --> Controllers : "HTTP请求"
+' Controllers --> BusinessServices : "业务处理"
+' BusinessServices --> WorkflowEngine : "工作流执行"
+' WorkflowEngine --down--> ModelRuntime : "AI推理"
+
+note right of WorkflowEngine : 支持可视化工作流编排\n包含条件判断、循环、\n并行执行等控制流\n可包含智能体节点
+
+note top of RAGSystem : 支持多种文档格式\n智能分段、向量检索\n重排序优化
+
+note top of AgentSystem : 支持ReAct和Function Calling\n多轮对话、工具使用\n自主决策能力\n可调用工作流和插件
+
+note bottom of PluginSystem : 支持代码插件和API插件\n沙箱执行环境\n插件市场生态
+
+note top of MCPSystem : Model Context Protocol\n统一模型上下文接口\n支持多模型协作
+
+note right of ToolSystem : 内置工具和外部工具\n支持工作流作为工具\n为智能体提供能力扩展
+
+@enduml

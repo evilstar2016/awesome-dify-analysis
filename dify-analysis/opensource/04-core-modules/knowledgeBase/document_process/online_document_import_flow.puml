@@ -1,0 +1,250 @@
+@startuml 在线文档导入流程时序图
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding      6
+skinparam ParticipantPadding    30
+
+title **Dify 在线文档导入流程时序图**
+
+actor "用户" as User
+participant "前端\n(Web)" as Frontend
+participant "数据集控制器\n(DatasetsController)" as Controller
+participant "数据集服务\n(DocumentService)" as DocumentService
+participant "Celery任务\n(document_indexing_task)" as CeleryTask
+participant "索引运行器\n(IndexingRunner)" as IndexingRunner
+participant "提取调度器\n(ExtractProcessor)" as ExtractProcessor
+participant "内容提取器\n(Extractor)" as Extractor
+participant "外部数据源\n(External API)" as ExternalAPI
+database "PostgreSQL" as Database
+database "Redis" as Redis
+
+== 1. 在线文档创建请求 ==
+User -> Frontend: 选择在线文档来源\n(Notion/Website)
+activate Frontend
+
+alt Notion导入
+    Frontend -> Controller: POST /datasets/{id}/documents\n(data_source_type: notion_import)
+else Website爬取
+    Frontend -> Controller: POST /datasets/{id}/documents\n(data_source_type: website_crawl)
+end
+activate Controller
+
+note right of Controller
+支持的在线数据源类型:
+- notion_import: Notion页面/数据库
+- website_crawl: 网站爬取
+  - Firecrawl
+  - Jina Reader
+  - WaterCrawl
+end note
+
+== 2. 文档记录创建 ==
+Controller -> DocumentService: save_document_with_dataset_id()
+activate DocumentService
+
+alt 网站爬取
+    DocumentService -> DocumentService: 解析website_info_list
+    note right
+    website_info包含:
+    - provider: firecrawl/jinareader/watercrawl
+    - job_id: 爬取任务ID
+    - url: 目标URL
+    - only_main_content: 是否仅主内容
+    - mode: crawl
+    end note
+else Notion导入
+    DocumentService -> DocumentService: 解析notion_info_list
+    note right
+    notion_info包含:
+    - workspace_id: 工作区ID
+    - pages: [{page_id, type}]
+    - credential_id: 凭证ID
+    end note
+end
+
+DocumentService -> Database: 创建Document记录\n(indexing_status: waiting)
+Database --> DocumentService: 返回document_id
+
+DocumentService -> CeleryTask: document_indexing_task.delay()\n(dataset_id, document_ids)
+activate CeleryTask
+
+note right of CeleryTask
+异步任务队列: dataset
+通过Celery + Redis执行
+end note
+
+DocumentService --> Controller: 返回documents, batch
+deactivate DocumentService
+
+Controller --> Frontend: 返回文档创建结果\n{documents, batch}
+deactivate Controller
+
+Frontend --> User: 显示导入进度
+deactivate Frontend
+
+== 3. 异步索引任务执行 ==
+CeleryTask -> Database: 查询Dataset和Document
+Database --> CeleryTask: 返回dataset, documents
+
+CeleryTask -> Database: 更新Document状态\n(indexing_status: parsing)
+CeleryTask -> IndexingRunner: run(documents)
+activate IndexingRunner
+
+== 4. 内容提取阶段 ==
+IndexingRunner -> IndexingRunner: _extract()
+IndexingRunner -> ExtractProcessor: extract(extract_setting)
+activate ExtractProcessor
+
+alt data_source_type == "notion_import"
+    ExtractProcessor -> Extractor: <<create>> NotionExtractor()
+    activate Extractor
+    
+    Extractor -> Extractor: _get_access_token()
+    note right
+    获取Notion访问令牌:
+    1. 从credential_id获取
+    2. 或使用环境变量NOTION_INTEGRATION_TOKEN
+    end note
+    
+    Extractor -> ExternalAPI: 更新last_edited_time\nGET /pages/{page_id}
+    activate ExternalAPI
+    ExternalAPI --> Extractor: 返回页面元数据
+    deactivate ExternalAPI
+    
+    alt notion_page_type == "page"
+        Extractor -> Extractor: _get_notion_block_data()
+        
+        loop 分页获取页面块
+            Extractor -> ExternalAPI: GET /blocks/{block_id}/children
+            activate ExternalAPI
+            ExternalAPI --> Extractor: 返回blocks数据
+            deactivate ExternalAPI
+            
+            Extractor -> Extractor: 解析block内容\n(rich_text, table, etc.)
+        end
+        
+    else notion_page_type == "database"
+        Extractor -> Extractor: _get_notion_database_data()
+        
+        loop 分页查询数据库
+            Extractor -> ExternalAPI: POST /databases/{id}/query
+            activate ExternalAPI
+            ExternalAPI --> Extractor: 返回数据库行
+            deactivate ExternalAPI
+            
+            Extractor -> Extractor: 解析properties\n(multi_select, rich_text, etc.)
+        end
+    end
+    
+    Extractor --> ExtractProcessor: 返回Document列表
+    deactivate Extractor
+
+else data_source_type == "website_crawl"
+    
+    alt provider == "firecrawl"
+        ExtractProcessor -> Extractor: <<create>> FirecrawlWebExtractor()
+    else provider == "jinareader"
+        ExtractProcessor -> Extractor: <<create>> JinaReaderWebExtractor()
+    else provider == "watercrawl"
+        ExtractProcessor -> Extractor: <<create>> WaterCrawlWebExtractor()
+    end
+    
+    activate Extractor
+    
+    Extractor -> Extractor: WebsiteService.get_crawl_url_data()
+    
+    alt mode == "crawl"
+        Extractor -> Redis: 检查缓存的爬取结果
+        
+        alt 缓存存在
+            Redis --> Extractor: 返回缓存数据
+        else 缓存不存在
+            Extractor -> ExternalAPI: 请求爬取API获取结果
+            activate ExternalAPI
+            
+            alt Firecrawl
+                ExternalAPI -> ExternalAPI: FirecrawlApp.check_crawl_status()
+            else Jina Reader
+                ExternalAPI -> ExternalAPI: httpx.get(r.jina.ai/{url})
+            else WaterCrawl
+                ExternalAPI -> ExternalAPI: WaterCrawlProvider.get_crawl_url_data()
+            end
+            
+            ExternalAPI --> Extractor: 返回markdown内容
+            deactivate ExternalAPI
+        end
+        
+    else mode == "scrape"
+        Extractor -> ExternalAPI: WebsiteService.get_scrape_url_data()
+        activate ExternalAPI
+        ExternalAPI --> Extractor: 返回抓取的页面内容
+        deactivate ExternalAPI
+    end
+    
+    Extractor -> Extractor: 构建Document对象\n(page_content: markdown)
+    
+    note right of Extractor
+    Document metadata包含:
+    - source_url: 来源URL
+    - title: 页面标题
+    - description: 页面描述
+    end note
+    
+    Extractor --> ExtractProcessor: 返回Document列表
+    deactivate Extractor
+end
+
+ExtractProcessor --> IndexingRunner: 返回text_docs
+deactivate ExtractProcessor
+
+IndexingRunner -> Database: 更新Document状态\n(indexing_status: splitting)
+
+== 5. 文本分割阶段 ==
+IndexingRunner -> IndexingRunner: _transform()
+note right
+根据process_rule进行:
+- 文本清洗
+- 文本分割(按字符/标记)
+- 生成DocumentSegment
+end note
+
+IndexingRunner -> IndexingRunner: _load_segments()
+IndexingRunner -> Database: 批量保存DocumentSegment
+
+== 6. 向量索引阶段 ==
+IndexingRunner -> IndexingRunner: _load()
+note right
+- 生成文本嵌入向量
+- 存储到向量数据库
+- 更新Document状态
+end note
+
+IndexingRunner -> Database: 更新Document状态\n(indexing_status: completed)
+IndexingRunner --> CeleryTask: 索引完成
+deactivate IndexingRunner
+
+CeleryTask -> Database: 记录完成时间
+deactivate CeleryTask
+
+== 7. 用户查询索引状态 ==
+User -> Frontend: 查询文档状态
+activate Frontend
+Frontend -> Controller: GET /datasets/{id}/documents/{batch}/indexing-status
+activate Controller
+Controller -> Database: 查询Document状态
+Database --> Controller: 返回indexing_status
+Controller --> Frontend: 返回状态信息
+deactivate Controller
+Frontend --> User: 显示处理完成
+deactivate Frontend
+
+@enduml
