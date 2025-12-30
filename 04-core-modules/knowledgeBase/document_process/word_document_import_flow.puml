@@ -1,0 +1,169 @@
+@startuml Word文档导入流程图
+!theme plain
+title Dify 知识库 Word 文档导入流程
+
+!define LIGHTBLUE #E1F5FE
+!define LIGHTGREEN #E8F5E8
+!define LIGHTRED #FFEBEE
+!define LIGHTYELLOW #FFF8E1
+
+participant "用户" as User
+box "前端层" LIGHTBLUE
+    participant "Web UI" as WebUI
+end box
+
+box "API控制器层" LIGHTGREEN
+    participant "DatasetDocumentListApi" as DocAPI
+    participant "DocumentApi" as DocumentController
+end box
+
+box "服务层" LIGHTYELLOW
+    participant "DatasetService" as DatasetSvc
+    participant "DocumentService" as DocumentSvc
+    participant "IndexingRunner" as IndexRunner
+end box
+
+box "文档处理层" LIGHTRED
+    participant "ExtractProcessor" as ExtractProc
+    participant "WordExtractor" as WordExt
+    participant "UnstructuredWordExtractor" as UnstructWordExt
+end box
+
+box "索引处理层" LIGHTGREEN
+    participant "IndexProcessorFactory" as IndexFactory
+    participant "ParagraphIndexProcessor" as ParaProcessor
+    participant "TextSplitter" as Splitter
+end box
+
+box "存储层" LIGHTBLUE
+    participant "Storage" as Storage
+    participant "VectorDB" as VectorDB
+    participant "Database" as DB
+end box
+
+== 文档上传阶段 ==
+
+User -> WebUI: 选择Word文档上传
+WebUI -> DocAPI: POST /datasets/{dataset_id}/documents
+note right: 包含文件信息和处理规则
+
+DocAPI -> DatasetSvc: 验证数据集权限
+DatasetSvc --> DocAPI: 权限验证通过
+
+DocAPI -> DocumentSvc: create_document()
+DocumentSvc -> DB: 创建Document记录
+note right: 状态: waiting
+DocumentSvc -> Storage: 保存文件到存储
+DocumentSvc --> DocAPI: 返回Document ID
+
+DocAPI -> IndexRunner: 触发异步索引任务
+note right: 启动Celery任务
+
+== 文档解析阶段 ==
+
+IndexRunner -> IndexRunner: run()
+IndexRunner -> DB: 查询Document和ProcessRule
+IndexRunner -> DB: 更新状态为"parsing"
+
+IndexRunner -> IndexFactory: 根据doc_form创建处理器
+IndexFactory --> IndexRunner: 返回ParagraphIndexProcessor
+
+IndexRunner -> ParaProcessor: extract()
+ParaProcessor -> ExtractProc: ExtractProcessor.extract()
+
+alt 文件扩展名判断
+    ExtractProc -> ExtractProc: 检查ETL_TYPE配置
+    
+    alt ETL_TYPE == "Unstructured"
+        alt 文件后缀 == ".docx"
+            ExtractProc -> WordExt: WordExtractor()
+            note right: 使用python-docx库
+        else 文件后缀 == ".doc"
+            ExtractProc -> UnstructWordExt: UnstructuredWordExtractor()
+            note right: 使用Unstructured API
+        end
+    else ETL_TYPE != "Unstructured"
+        alt 文件后缀 == ".docx"
+            ExtractProc -> WordExt: WordExtractor()
+        end
+    end
+end
+
+== Word文档内容提取 ==
+
+alt WordExtractor处理(.docx)
+    WordExt -> WordExt: parse_docx()
+    WordExt -> WordExt: _extract_images_from_docx()
+    note right: 提取并保存图片到存储
+    
+    loop 遍历文档元素
+        WordExt -> WordExt: 处理段落(paragraphs)
+        WordExt -> WordExt: 处理表格(_table_to_markdown)
+        WordExt -> WordExt: 处理图片(插入Markdown链接)
+        WordExt -> WordExt: 处理超链接
+    end
+    
+    WordExt -> Storage: 保存提取的图片
+    WordExt -> DB: 创建UploadFile记录
+    WordExt --> ExtractProc: 返回Document列表
+else UnstructuredWordExtractor处理(.doc)
+    UnstructWordExt -> UnstructWordExt: partition_via_api()
+    note right: 调用Unstructured API
+    UnstructWordExt -> UnstructWordExt: chunk_by_title()
+    UnstructWordExt --> ExtractProc: 返回Document列表
+end
+
+ExtractProc --> ParaProcessor: 返回提取的文档
+
+IndexRunner -> DB: 更新状态为"splitting"
+
+== 文档分段阶段 ==
+
+IndexRunner -> ParaProcessor: transform()
+ParaProcessor -> ParaProcessor: 获取处理规则
+ParaProcessor -> ParaProcessor: 创建TextSplitter
+
+loop 对每个文档
+    ParaProcessor -> ParaProcessor: CleanProcessor.clean()
+    note right: 清理文档内容
+    ParaProcessor -> Splitter: split_documents()
+    note right: 按规则分段
+    
+    loop 对每个分段
+        ParaProcessor -> ParaProcessor: 生成doc_id和hash
+        ParaProcessor -> ParaProcessor: 清理前导符号
+    end
+end
+
+ParaProcessor --> IndexRunner: 返回分段文档
+
+== 文档存储阶段 ==
+
+IndexRunner -> IndexRunner: _load_segments()
+IndexRunner -> DB: 保存DocumentSegment记录
+
+IndexRunner -> ParaProcessor: load()
+
+alt 高质量索引
+    ParaProcessor -> VectorDB: 创建向量索引
+    note right: 使用embedding模型
+end
+
+alt 关键词索引
+    ParaProcessor -> ParaProcessor: 提取关键词
+    ParaProcessor -> DB: 保存关键词索引
+end
+
+IndexRunner -> DB: 更新状态为"completed"
+
+IndexRunner --> DocAPI: 索引完成
+DocAPI --> WebUI: 返回处理结果
+WebUI --> User: 显示导入成功
+
+== 错误处理 ==
+
+note over IndexRunner, DB: 任何阶段出错时
+IndexRunner -> DB: 更新状态为"error"
+IndexRunner -> DB: 记录错误信息
+
+@enduml

@@ -1,0 +1,115 @@
+@startuml AccountPermission_Login
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title Dify 账号权限管理核心流程 - 1. 账号登录与认证
+
+participant User as "用户\n(浏览器)"
+participant API as "登录API\n(/login)"
+participant AuthService as "AccountService\n(认证服务)"
+participant Database as "数据库\n(PostgreSQL)"
+participant Redis as "缓存\n(Redis)"
+participant PassportService as "PassportService\n(令牌签名)"
+
+autonumber
+
+User ->> API: POST /login\n{email, password}
+activate API
+
+API ->> AuthService: authenticate(email, password)
+activate AuthService
+
+AuthService ->> Database: SELECT * FROM accounts\nWHERE email = ?
+activate Database
+Database -->> AuthService: Account record
+deactivate Database
+
+note over AuthService
+  检查账号状态
+  - 不存在 → 密码错误
+  - 被禁用 → 抛出异常
+end note
+
+AuthService ->> AuthService: compare_password(\npassword, account.password,\naccount.password_salt)
+
+alt 密码错误
+  AuthService -->> API: AccountPasswordError
+  API -->> User: {"error": "Invalid email or password"}
+else 密码正确
+  note over AuthService
+    若为邀请链接登录且账号无密码：
+    设置密码和密码盐
+  end note
+  
+  AuthService ->> AuthService: validate password matches
+  
+  alt 账号状态为 PENDING
+    AuthService ->> AuthService: account.status = ACTIVE
+    AuthService ->> AuthService: account.initialized_at = now()
+  end
+  
+  AuthService ->> Database: db.session.commit()
+  activate Database
+  Database -->> AuthService: 账号更新完成
+  deactivate Database
+  
+  AuthService -->> API: Account object
+  deactivate AuthService
+  
+  API ->> AuthService: login(account, ip_address)
+  activate AuthService
+  
+  AuthService ->> Database: UPDATE accounts\nSET last_login_at, last_login_ip
+  activate Database
+  Database -->> AuthService: success
+  deactivate Database
+  
+  note over AuthService
+    检查账号状态
+    PENDING → ACTIVE
+  end note
+  
+  AuthService ->> PassportService: get_account_jwt_token(account)
+  activate PassportService
+  PassportService -->> AuthService: JWT access_token\n(包含: account_id, tenant_id, role)
+  deactivate PassportService
+  
+  AuthService ->> AuthService: refresh_token = _generate_refresh_token()\n(32 字节随机值)
+  
+  AuthService ->> AuthService: csrf_token = generate_csrf_token(account_id)
+  
+  AuthService ->> Redis: SET refresh_token:{hash}\naccount_id EX 30d
+  activate Redis
+  Redis -->> AuthService: OK
+  deactivate Redis
+  
+  AuthService -->> API: TokenPair {\n  access_token,\n  refresh_token,\n  csrf_token\n}
+  deactivate AuthService
+  
+  API ->> API: 设置 Cookie\n- access_token (HttpOnly, Secure)\n- refresh_token (HttpOnly, Secure)\n- csrf_token
+  
+  API -->> User: {result: "success"}\n+ Set-Cookie headers
+  
+end
+
+deactivate API
+
+note over User, Redis
+  客户端现已认证，可以：
+  1. 使用 access_token 进行 API 调用
+  2. access_token 过期后使用 refresh_token 刷新
+  3. 所有状态改变请求需要 CSRF token 验证
+end note
+
+@enduml
+

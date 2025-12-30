@@ -1,0 +1,145 @@
+@startuml AgentHistoryPromptTransform_Sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding      6
+skinparam ParticipantPadding    30
+
+title AgentHistoryPromptTransform 核心流程时序图
+
+actor "Agent Runner" as Agent
+participant "CotAgentRunner /\nFCAgentRunner" as Runner
+participant "AgentHistoryPromptTransform" as Transform
+participant "PromptTransform" as Base
+participant "LargeLanguageModel" as LLM
+participant "TokenBufferMemory" as Memory
+
+== 1. Agent 执行阶段 ==
+
+Agent -> Runner: 执行 Agent 迭代
+activate Runner
+
+Runner -> Runner: 获取当前 prompt_messages
+Runner -> Runner: 获取历史 history_messages
+
+== 2. 初始化历史转换器 ==
+
+Runner -> Transform: new AgentHistoryPromptTransform(\n  model_config,\n  prompt_messages,\n  history_messages,\n  memory\n)
+activate Transform
+
+note right of Transform
+    初始化参数:
+    - model_config: 模型配置
+    - prompt_messages: 当前消息
+    - history_messages: 历史消息
+    - memory: Token缓冲内存
+end note
+
+== 3. 获取处理后的 Prompt ==
+
+Runner -> Transform: get_prompt()
+
+== 4. 提取系统消息 ==
+
+Transform -> Transform: 遍历 history_messages
+loop 每个 history_message
+    alt message is SystemPromptMessage
+        Transform -> Transform: 添加到 prompt_messages
+        Transform -> Transform: num_system++
+    end
+end
+
+== 5. 检查内存 ==
+
+alt memory 为空
+    Transform --> Runner: 返回只包含系统消息的列表
+else memory 存在
+    
+    == 6. 计算可用 Token ==
+    
+    Transform -> Base: _calculate_rest_token(prompt_messages, model_config)
+    activate Base
+    
+    Base -> Base: 获取模型上下文大小
+    Base -> Base: 获取当前消息 token 数
+    Base -> Base: 获取 max_tokens 参数
+    Base -> Base: rest_tokens = context_size - max_tokens - current_tokens
+    
+    Base --> Transform: max_token_limit
+    deactivate Base
+    
+    == 7. 检查历史消息是否超限 ==
+    
+    Transform -> LLM: get_num_tokens(history_messages)
+    activate LLM
+    LLM --> Transform: curr_message_tokens
+    deactivate LLM
+    
+    alt curr_message_tokens <= max_token_limit
+        Transform --> Runner: 返回完整的 history_messages
+        note right: 历史消息未超限，直接返回
+    else curr_message_tokens > max_token_limit
+        
+        == 8. 智能裁剪历史消息 ==
+        
+        Transform -> Transform: 初始化 num_prompt = 0
+        
+        loop 从后向前遍历 history_messages
+            alt message is SystemPromptMessage
+                Transform -> Transform: 跳过系统消息
+            else
+                Transform -> Transform: 添加到 prompt_messages
+                Transform -> Transform: num_prompt++
+                
+                alt message is UserPromptMessage
+                    note right
+                        用户消息标志着一轮对话的开始
+                        检查当前累积的消息是否超限
+                    end note
+                    
+                    Transform -> LLM: get_num_tokens(prompt_messages)
+                    activate LLM
+                    LLM --> Transform: curr_tokens
+                    deactivate LLM
+                    
+                    alt curr_tokens > max_token_limit
+                        Transform -> Transform: 移除本轮消息\nprompt_messages[:-num_prompt]
+                        Transform -> Transform: break 退出循环
+                    else
+                        Transform -> Transform: num_prompt = 0
+                        note right: 重置计数，准备下一轮
+                    end
+                end
+            end
+        end
+        
+        == 9. 重组消息顺序 ==
+        
+        Transform -> Transform: message_prompts = prompt_messages[num_system:]
+        Transform -> Transform: message_prompts.reverse()
+        note right: 恢复时间顺序（从旧到新）
+        
+        Transform -> Transform: 合并系统消息和对话消息
+        note right
+            最终顺序:
+            1. 系统消息
+            2. 时间顺序的对话消息
+        end note
+        
+        Transform --> Runner: prompt_messages
+    end
+end
+
+deactivate Transform
+
+Runner --> Agent: 处理后的 prompt_messages
+deactivate Runner
+
+@enduml
