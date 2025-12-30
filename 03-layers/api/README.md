@@ -89,3 +89,19 @@ plantuml -tsvg chat_api_sequence.puml
 - [Dify 官方文档](https://docs.dify.ai/)
 - [API Reference](https://docs.dify.ai/guides/tools)
 - [SDK 目录](../../sdks/)
+
+---
+
+📱 **关注公众号「柒叔代码阁」**
+
+定期发布Dify深度内容及生产实践～
+
+![公众号二维码](../../qrcode.png)
+
+💡 **为什么关注？**
+
+不只是告诉你"是什么"和"怎么做"，更重要的是 **"为什么"** — 理解设计背后的思想，才能举一反三。
+
+💬 **交流讨论**
+- GitHub Issue/Discussion：技术问题讨论
+- 公众号留言
