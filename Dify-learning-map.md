@@ -1,5 +1,7 @@
 # 🗺️ Dify 学习地图
 
+🌍 [English Version](./Dify-learning-map_en.md) | [中文版本](./Dify-learning-map.md)
+
 > **从入门到精通 Dify 架构的完整学习路径**  
 > 适合架构师、开发者、AI 工程师系统性学习 Dify
 
