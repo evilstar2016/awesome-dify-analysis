@@ -1,5 +1,7 @@
 # Dify 项目深度架构解析
 
+🌍 [English Version](./README_en.md) | [中文版本](./README.md)
+
 > 🎯 **从系统架构师视角深度拆解 Dify**  
 > 30+ 篇技术文档 | 完整架构图 | 生产实战经验
 
