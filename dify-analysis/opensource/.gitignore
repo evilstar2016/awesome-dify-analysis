@@ -1,0 +1,31 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.suo
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# 临时文件
+*.tmp
+*.bak
+*.log
+*~
+
+# 私有内容（不应出现在开源仓库）
+_SYNC_GUIDE.md
+_OPENSOURCE_CHECKLIST.md
+operator_strategy/
+backup/
+
+# Node (如果有示例项目)
+node_modules/
+
+# Python (如果有示例项目)
+__pycache__/
+*.pyc
+.env
