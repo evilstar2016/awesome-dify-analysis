@@ -1,0 +1,254 @@
+@startuml Dify Complete Component Architecture Diagram
+!theme plain
+skinparam componentStyle rectangle
+skinparam backgroundColor white
+skinparam Package { 
+  BackgroundColor LightGray
+  FontColor Blue
+}
+skinparam component {
+  BackgroundColor LightBlue
+  BorderColor Black
+  ArrowColor Black
+  FontColor DarkBlue
+}
+skinparam note {
+  backgroundColor LightYellow
+}
+
+title Dify LLM Application Development Platform - Complete Component Architecture Diagram
+
+' Define container layers
+package "Frontend Layer" as FrontendLayer {
+  component "Next.js App Router" as NextApp {
+    component "Pages" as Pages
+    component "UI Components Library" as Components  
+    component "React Hooks" as Hooks
+    component "Context State Management" as Context
+  }
+  
+  component "Service Layer" as ServiceLayer {
+    component "API Client" as APIClient
+    component "Apps Service" as AppsService
+    component "Workflow Service" as WebWorkflowService
+    component "Dataset Service" as WebDatasetService
+    component "Plugin Service" as WebPluginService
+    component "Auth Service" as WebAuthService
+  }
+  
+  component "Utils Layer" as WebUtils {
+    component "HTTP Client" as HTTPClient
+    component "TypeScript Types" as Types
+    component "Internationalization (i18n)" as I18n
+    component "Theme System" as Themes
+  }
+}
+
+package "Backend Layer" as BackendLayer {
+  ' API Gateway Layer
+  package "API Gateway Layer" as APIGateway {
+    component "Flask Application Entry (DifyApp)" as FlaskApp {
+      component "App Factory" as AppFactory
+      component "Middleware" as Middleware
+      component "Extensions Initialization" as Extensions
+    }
+    
+    component "Controllers Layer" as Controllers {
+      component "Console API" as ConsoleAPI
+      component "Service API" as ServiceAPI  
+      component "Web API" as WebAPI
+      component "File API" as FileAPI
+      component "Inner API" as InnerAPI
+    }
+  }
+
+  ' Service Layer
+  package "Application Service Layer" as AppServiceLayer {
+    component "Auth & Authorization" as AuthService {
+      component "OAuth Server" as OAuthServer
+      component "Web App Authentication" as WebappAuth
+      component "API Key Management" as APIKeyManager
+      component "Access Control" as AccessControl
+    }
+    
+    component "Business Services" as BusinessServices {
+      component "Account Service" as AccountService
+      component "Conversation Service" as ConversationService
+      component "Message Service" as MessageService
+      component "Dataset Service" as DatasetService
+      component "Knowledge Base Service" as KnowledgeService
+      component "File Service" as FileService
+      component "Tag Service" as TagService
+      component "Operation Service" as OperationService
+    }
+    
+    component "Workflow Services" as WorkflowServices {
+      component "Workflow App Service" as WorkflowAppService
+      component "Workflow Run Service" as WorkflowRunService
+      component "Workflow Draft Service" as WorkflowDraftService
+      component "Variable Truncator Service" as VariableTruncatorService
+    }
+  }
+  
+  ' Core Business Layer
+  package "Core Business Layer" as CoreLayer {
+    component "App Management" as AppManagement {
+      component "App Service" as AppService
+      component "App Configuration Service" as AppConfigService
+      component "App Generation Service" as AppGenerateService
+    }
+    
+    component "Workflow Engine" as WorkflowEngine {
+      component "Workflow Entry" as WorkflowEntry
+      component "Graph Engine" as GraphEngine
+      component "Node Executors" as NodeExecutors
+      component "Variable Pool" as VariablePool
+      component "Runtime State" as RuntimeState
+    }
+    
+    component "Model Runtime" as ModelRuntime {
+      component "Model Providers" as ModelProviders
+      component "Model Manager" as ModelManager
+      component "Provider Manager" as ProviderManager
+      component "Load Balancing Service" as LoadBalancingService
+    }
+    
+    component "RAG System" as RAGSystem {
+      component "Document Processor" as DocumentProcessor
+      component "Vector Retriever" as VectorRetriever
+      component "Reranker" as Reranker
+      component "Embedding Service" as EmbeddingService
+      component "Document Store" as DocumentStore
+    }
+    
+    component "Agent System" as AgentSystem {
+      component "Base Agent Runner" as BaseAgentRunner
+      component "CoT Agent Runner" as CoTAgentRunner
+      component "FC Agent Runner" as FCAgentRunner
+      component "Output Parser" as OutputParser
+      component "Strategy Manager" as StrategyManager
+    }
+    
+    component "Plugin System" as PluginSystem {
+      component "Code Plugin Manager" as CodePluginManager
+      component "API Plugin Manager" as APIPluginManager
+      component "Plugin Repository" as PluginRepository
+      component "Plugin Runtime" as PluginRuntime
+    }
+    
+    component "Tool System" as ToolSystem {
+      component "Built-in Tools" as BuiltinTools
+      component "External Tools" as ExternalTools
+      component "Tool Providers" as ToolProviders
+      component "Tool Invoker" as ToolInvoker
+    }
+    
+    component "MCP System (Model Context Protocol)" as MCPSystem {
+      component "MCP Server Manager" as MCPServerManager
+      component "MCP Client" as MCPClient
+      component "Protocol Adapter" as ProtocolAdapter
+    }
+  }
+  
+  
+  ' Infrastructure Layer
+  package "Infrastructure Layer" as InfraLayer {
+    component "Data Access Layer" as DataAccess {
+      component "Repository Pattern" as Repositories
+      component "Data Models" as Models
+      component "Database Migrations" as Migrations
+    }
+    
+    component "Message Queue" as MessageQueue {
+      component "Celery Task Queue" as CeleryTasks
+      component "Background Jobs" as BackgroundJobs
+      component "Scheduled Tasks" as ScheduledTasks
+    }
+    
+    component "Observability" as Observability {
+      component "Logging System" as LoggingSystem
+      component "Metrics Collection" as MetricsCollection
+      component "Tracing" as Tracing
+      component "Alert System" as AlertSystem
+    }
+
+    component "External Integration" as ExternalIntegration {
+      component "Vector Database Integration" as VectorDBIntegration
+      component "Cloud Storage Integration" as CloudStorageIntegration
+      component "Third-party API Integration" as ThirdPartyAPIIntegration
+    }
+  }
+}
+
+package "External Dependencies" as ExternalDeps {
+  database "PostgreSQL" as PostgreDB
+  database "Redis" as RedisDB
+  database "Vector Database" as VectorDB
+  cloud "Cloud Storage" as CloudStorage
+  component "LLM Providers" as LLMProviders
+  component "Third-party Services" as ThirdPartyServices
+}
+
+' Define connection relationships
+NextApp --> ServiceLayer : "API Calls"
+ServiceLayer --> APIClient : "HTTP Requests"
+APIClient --down--> Controllers : "REST API"
+
+Controllers --down--> AppServiceLayer : "Business Logic Calls"
+AppServiceLayer --down--> CoreLayer : "Core Function Calls"
+
+' Internal connections within core layer
+WorkflowEngine --down--> ModelRuntime : "Model Calls"
+WorkflowEngine --down--> RAGSystem : "Knowledge Retrieval"  
+WorkflowEngine --up--> AgentSystem : "Agent Execution"
+WorkflowEngine --down--> ToolSystem : "Tool Calls"
+WorkflowEngine --down--> PluginSystem : "Plugin Execution"
+
+' Agent system's bidirectional calling capabilities
+AgentSystem --down--> ModelRuntime : "Model Inference"
+AgentSystem --down--> ToolSystem : "Tool Usage"
+AgentSystem --> WorkflowEngine : "Call Workflows"
+AgentSystem --down--> PluginSystem : "Call Plugins"
+
+' Tool system supports workflows as tools
+ToolSystem --up--> WorkflowEngine : "Workflow as Tool"
+
+RAGSystem --> VectorDB : "Vector Storage"
+RAGSystem --down--> ModelRuntime : "Embedding Models"
+
+PluginSystem --right--> MCPSystem : "MCP Protocol"
+
+' Infrastructure connections
+CoreLayer --down--> DataAccess : "Data Persistence"
+CoreLayer --down--> MessageQueue : "Async Tasks"
+CoreLayer --down--> Observability : "Monitoring & Logging"
+
+DataAccess --down--> PostgreDB : "Primary Database"
+DataAccess --down--> RedisDB : "Cache Storage"
+ExternalIntegration --down--> CloudStorage : "File Storage"
+ExternalIntegration --down--> VectorDB : "Vector Storage"
+ModelRuntime --down--> LLMProviders : "AI Models"
+
+' Async task flow
+MessageQueue --> CoreLayer : "Task Execution"
+
+' Complete frontend to backend chain
+' Pages --> APIClient : "User Interaction"
+' APIClient --> Controllers : "HTTP Requests"
+' Controllers --> BusinessServices : "Business Processing"
+' BusinessServices --> WorkflowEngine : "Workflow Execution"
+' WorkflowEngine --down--> ModelRuntime : "AI Inference"
+
+note right of WorkflowEngine : Supports visual workflow orchestration\nIncludes conditional judgments, loops,\nparallel execution and other control flows\nCan contain agent nodes
+
+note top of RAGSystem : Supports multiple document formats\nIntelligent segmentation, vector retrieval\nReranking optimization
+
+note top of AgentSystem : Supports ReAct and Function Calling\nMulti-turn conversations, tool usage\nAutonomous decision-making capabilities\nCan call workflows and plugins
+
+note bottom of PluginSystem : Supports code plugins and API plugins\nSandbox execution environment\nPlugin marketplace ecosystem
+
+note top of MCPSystem : Model Context Protocol\nUnified model context interface\nSupports multi-model collaboration
+
+note right of ToolSystem : Built-in tools and external tools\nSupports workflows as tools\nProvides capability extension for agents
+
+@enduml
