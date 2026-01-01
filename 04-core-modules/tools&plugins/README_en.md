@@ -11,7 +11,7 @@ Tools & Plugins is Dify's tools and plugins system, providing flexible tool exte
 | Filename | Description |
 |----------|-------------|
 | [dify_tools_and_plugins_development_analysis.md](./dify_tools_and_plugins_development_analysis.md) | Tools and plugins development complete analysis documentation |
-| [dify_tools_and_plugins_development_flow.puml](./dify_tools_and_plugins_development_flow.puml) | Tool development flow diagram (PlantUML) |
+| [dify_tools_and_plugins_development_flow_en.puml](./dify_tools_and_plugins_development_flow_en.puml) | Tool development flow diagram (PlantUML) |
 
 ## Related Modules
 

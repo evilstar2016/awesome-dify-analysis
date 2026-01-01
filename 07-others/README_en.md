@@ -56,7 +56,7 @@ This directory contains supplementary analysis documents that do not belong to t
 
 ---
 
-### 3. [context_engineering_qa_flow.puml](./context_engineering_qa_flow.puml)
+### 3. [context_engineering_qa_flow_en.puml](./context_engineering_qa_flow_en.puml)
 
 **Type:** PlantUML flow diagram
 
@@ -68,7 +68,7 @@ This directory contains supplementary analysis documents that do not belong to t
 **Viewing Methods:**
 - Online: https://www.plantuml.com/plantuml/uml/ (copy content and paste)
 - VS Code: Install PlantUML plugin, press Alt + D to preview
-- Command line: `plantuml context_engineering_qa_flow.puml`
+- Command line: `plantuml context_engineering_qa_flow_en.puml`
 
 **Suitable Readers:** All developers who need to quickly understand the knowledge Q&A system flow
 

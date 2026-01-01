@@ -19,8 +19,8 @@ Database is Dify's data persistence layer, designed based on **PostgreSQL**, usi
 | Filename | Description |
 |----------|-------------|
 | [dify_data_architecture.md](./dify_data_architecture.md) | Database architecture complete technical documentation |
-| [dify_data_architecture.puml](./dify_data_architecture.puml) | Database ER diagram (PlantUML source code) |
-| [dify_data_architecture_overview.puml](./dify_data_architecture_overview.puml) | Database architecture overview diagram (PlantUML source code) |
+| [dify_data_architecture_en.puml](./dify_data_architecture_en.puml) | Database ER diagram (PlantUML source code) |
+| [dify_data_architecture_overview_en.puml](./dify_data_architecture_overview_en.puml) | Database architecture overview diagram (PlantUML source code) |
 
 ---
 

@@ -24,12 +24,12 @@ KnowledgeBase is Dify's knowledge base and RAG (Retrieval-Augmented Generation) 
 | [pdf_processing_technical_analysis.md](./document_process/pdf_processing_technical_analysis.md) | PDF document processing technical analysis |
 | [word_document_processing_analysis.md](./document_process/word_document_processing_analysis.md) | Word document processing analysis |
 | [online_document_import_analysis.md](./document_process/online_document_import_analysis.md) | Online document import analysis |
-| [pdf_document_import_sequence.puml](./document_process/pdf_document_import_sequence.puml) | PDF document import sequence diagram |
-| [word_document_import_flow.puml](./document_process/word_document_import_flow.puml) | Word document import flow diagram |
-| [excel_document_processing_flow.puml](./document_process/excel_document_processing_flow.puml) | Excel document processing flow diagram |
-| [excel_import_flow.puml](./document_process/excel_import_flow.puml) | Excel import flow diagram |
-| [notion_integration_flow.puml](./document_process/notion_integration_flow.puml) | Notion integration flow diagram |
-| [online_document_import_flow.puml](./document_process/online_document_import_flow.puml) | Online document import flow diagram |
+| [pdf_document_import_sequence_en.puml](./document_process/pdf_document_import_sequence_en.puml) | PDF document import sequence diagram |
+| [word_document_import_flow_en.puml](./document_process/word_document_import_flow_en.puml) | Word document import flow diagram |
+| [excel_document_processing_flow_en.puml](./document_process/excel_document_processing_flow_en.puml) | Excel document processing flow diagram |
+| [excel_import_flow_en.puml](./document_process/excel_import_flow_en.puml) | Excel import flow diagram |
+| [notion_integration_flow_en.puml](./document_process/notion_integration_flow_en.puml) | Notion integration flow diagram |
+| [online_document_import_flow_en.puml](./document_process/online_document_import_flow_en.puml) | Online document import flow diagram |
 
 ## Related Modules
 

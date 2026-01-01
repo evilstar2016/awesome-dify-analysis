@@ -11,12 +11,12 @@ Prompt is Dify's prompt management and transformation system, responsible for co
 | Filename | Description |
 |----------|-------------|
 | [dify_prompt_management_documentation.md](./dify_prompt_management_documentation.md) | Prompt management module complete technical documentation |
-| [prompt_module_class_diagram.puml](./prompt_module_class_diagram.puml) | Module class diagram (PlantUML) |
-| [simple_prompt_transform_sequence.puml](./simple_prompt_transform_sequence.puml) | SimplePromptTransform sequence diagram |
-| [advanced_prompt_transform_sequence.puml](./advanced_prompt_transform_sequence.puml) | AdvancedPromptTransform sequence diagram |
-| [agent_history_prompt_transform_sequence.puml](./agent_history_prompt_transform_sequence.puml) | AgentHistoryPromptTransform sequence diagram |
-| [prompt_template_parser_sequence.puml](./prompt_template_parser_sequence.puml) | PromptTemplateParser parsing process sequence diagram |
-| [prompt_module_integration_sequence.puml](./prompt_module_integration_sequence.puml) | Prompt module and application layer integration sequence diagram |
+| [prompt_module_class_diagram_en.puml](./prompt_module_class_diagram_en.puml) | Module class diagram (PlantUML) |
+| [simple_prompt_transform_sequence_en.puml](./simple_prompt_transform_sequence_en.puml) | SimplePromptTransform sequence diagram |
+| [advanced_prompt_transform_sequence_en.puml](./advanced_prompt_transform_sequence_en.puml) | AdvancedPromptTransform sequence diagram |
+| [agent_history_prompt_transform_sequence_en.puml](./agent_history_prompt_transform_sequence_en.puml) | AgentHistoryPromptTransform sequence diagram |
+| [prompt_template_parser_sequence_en.puml](./prompt_template_parser_sequence_en.puml) | PromptTemplateParser parsing process sequence diagram |
+| [prompt_module_integration_sequence_en.puml](./prompt_module_integration_sequence_en.puml) | Prompt module and application layer integration sequence diagram |
 
 ## Related Modules
 

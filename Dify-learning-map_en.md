@@ -90,7 +90,7 @@ graph TD
 | No. | Document | Key Takeaways | Reading Time |
 |-----|----------|---------------|--------------|
 | 2.1 | [02-architecture/README.md](./02-architecture/README.md) | Complete system architecture and component relationships | 30 minutes |
-| 2.2 | [02-architecture/dify_componet_architecture.puml](./02-architecture/dify_componet_architecture.puml) | Architecture diagram source code (editable) | 20 minutes |
+| 2.2 | [02-architecture/dify_componet_architecture_en.puml](./02-architecture/dify_componet_architecture_en.puml) | Architecture diagram source code (editable) | 20 minutes |
 | 2.3 | [03-layers/api/README.md](./03-layers/api/README.md) | API layered design | 25 minutes |
 | 2.4 | [04-core-modules/README.md](./04-core-modules/README.md) | Core modules overview | 20 minutes |
 

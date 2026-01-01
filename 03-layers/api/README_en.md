@@ -14,17 +14,17 @@ This directory contains Dify backend API complete documentation and PlantUML seq
 
 | File | Description |
 |------|-------------|
-| [dify_api_architecture.puml](./dify_api_architecture.puml) | Dify API Architecture Overview |
+| [dify_api_architecture_en.puml](./dify_api_architecture_en.puml) | Dify API Architecture Overview |
 
 ### Core Scenario Sequence Diagrams
 
 | File | Description | Involved APIs |
 |------|-------------|---------------|
-| [chat_api_sequence.puml](./chat_api_sequence.puml) | Chat/Completion API Call Flow | `/v1/chat-messages`, `/v1/completion-messages` |
-| [workflow_api_sequence.puml](./workflow_api_sequence.puml) | Workflow API Call Flow | `/v1/workflows/run`, `/v1/workflows/logs` |
-| [dataset_api_sequence.puml](./dataset_api_sequence.puml) | Dataset/Knowledge Base API Call Flow | `/v1/datasets`, `/v1/documents`, `/v1/segments` |
-| [file_upload_api_sequence.puml](./file_upload_api_sequence.puml) | File Upload API Call Flow | `/v1/files/upload` |
-| [audio_api_sequence.puml](./audio_api_sequence.puml) | Audio Conversion API Call Flow | `/v1/audio-to-text`, `/v1/text-to-audio` |
+| [chat_api_sequence_en.puml](./chat_api_sequence_en.puml) | Chat/Completion API Call Flow | `/v1/chat-messages`, `/v1/completion-messages` |
+| [workflow_api_sequence_en.puml](./workflow_api_sequence_en.puml) | Workflow API Call Flow | `/v1/workflows/run`, `/v1/workflows/logs` |
+| [dataset_api_sequence_en.puml](./dataset_api_sequence_en.puml) | Dataset/Knowledge Base API Call Flow | `/v1/datasets`, `/v1/documents`, `/v1/segments` |
+| [file_upload_api_sequence_en.puml](./file_upload_api_sequence_en.puml) | File Upload API Call Flow | `/v1/files/upload` |
+| [audio_api_sequence_en.puml](./audio_api_sequence_en.puml) | Audio Conversion API Call Flow | `/v1/audio-to-text`, `/v1/text-to-audio` |
 
 ## PlantUML Viewing Methods
 
@@ -44,10 +44,10 @@ Visit [PlantUML Online Server](http://www.plantuml.com/plantuml/uml/) and paste 
 # Windows: choco install plantuml
 
 # Generate PNG
-plantuml chat_api_sequence.puml
+plantuml chat_api_sequence_en.puml
 
 # Generate SVG
-plantuml -tsvg chat_api_sequence.puml
+plantuml -tsvg chat_api_sequence_en.puml
 ```
 
 ## API Category Description

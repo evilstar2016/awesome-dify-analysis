@@ -15,8 +15,8 @@ Workflow is Dify's workflow engine, using event-driven architecture, supporting 
 | [workflow_nodes_documentation.md](./workflow_nodes_documentation.md) | Workflow node types detailed explanation |
 | [workflow_component_development_guide.md](./workflow_component_development_guide.md) | Custom node development guide |
 | [workflow_node_development_example.md](./workflow_node_development_example.md) | Node development practical example |
-| [workflow_management_sequence_diagram.puml](./workflow_management_sequence_diagram.puml) | Workflow management sequence diagram (PlantUML) |
-| [workflow_component_development_flow.puml](./workflow_component_development_flow.puml) | Component development flow diagram (PlantUML) |
+| [workflow_management_sequence_diagram_en.puml](./workflow_management_sequence_diagram_en.puml) | Workflow management sequence diagram (PlantUML) |
+| [workflow_component_development_flow_en.puml](./workflow_component_development_flow_en.puml) | Component development flow diagram (PlantUML) |
 
 ---
 

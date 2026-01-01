@@ -11,8 +11,8 @@ Agent is Dify's intelligent agent system, using strategy pattern to support mult
 | Filename | Description |
 |----------|-------------|
 | [agent_capability_technical_documentation.md](./agent_capability_technical_documentation.md) | Agent capability complete technical documentation |
-| [agent_capability_architecture.puml](./agent_capability_architecture.puml) | Agent architecture diagram (PlantUML) |
-| [agent_capability_sequence_diagram.puml](./agent_capability_sequence_diagram.puml) | Agent execution sequence diagram (PlantUML) |
+| [agent_capability_architecture_en.puml](./agent_capability_architecture_en.puml) | Agent architecture diagram (PlantUML) |
+| [agent_capability_sequence_diagram_en.puml](./agent_capability_sequence_diagram_en.puml) | Agent execution sequence diagram (PlantUML) |
 
 ---
 

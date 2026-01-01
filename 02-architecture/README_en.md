@@ -8,7 +8,7 @@ This directory contains Dify's **complete system architecture** design documents
 
 ### 📄 Core Documents
 
-- **`dify_componet_architecture.puml`** - Dify complete component architecture (PlantUML source file)
+- **`dify_componet_architecture_en.puml`** - Dify complete component architecture (PlantUML source file)
   - Frontend layer: Next.js + React architecture
   - Backend layer: Flask + DDD layered design
   - Core modules: Workflow, Agent, RAG, Model Runtime, etc.
