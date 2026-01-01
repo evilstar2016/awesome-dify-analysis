@@ -1,0 +1,192 @@
+@startuml Excel Document Processing Detailed Sequence Diagram
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding      6
+skinparam ParticipantPadding    30
+
+
+title **Dify Excel Document (.xlsx/.xls) Processing Detailed Sequence Diagram**
+
+actor "User" as User
+participant "File Upload API" as FileAPI
+participant "Dataset Service" as DatasetService
+participant "Indexing Runner" as IndexingRunner
+participant "Excel Extractor" as ExcelExtractor
+participant "openpyxl" as OpenPyXL
+participant "pandas" as Pandas
+participant "xlrd" as XLRD
+database "PostgreSQL" as Database
+
+== 1. File Upload Phase ==
+User -> FileAPI: POST /files (Upload .xlsx/.xls file)
+activate FileAPI
+FileAPI -> FileAPI: Validate file type (.xlsx/.xls)
+FileAPI -> FileAPI: Save Excel document
+FileAPI -> Database: Create UploadFile record
+FileAPI --> User: Return file ID
+deactivate FileAPI
+
+== 2. Create Dataset Document ==
+User -> DatasetService: POST /datasets/{id}/documents
+activate DatasetService
+DatasetService -> Database: Create DatasetDocument record
+DatasetService -> IndexingRunner: Trigger asynchronous processing task
+DatasetService --> User: Return processing task ID
+deactivate DatasetService
+
+== 3. Excel Document Parsing Processing ==
+activate IndexingRunner
+IndexingRunner -> ExcelExtractor: Create Excel extractor instance
+activate ExcelExtractor
+ExcelExtractor -> ExcelExtractor: Check file extension
+
+alt .xlsx file processing
+    == 4a. XLSX File Processing (.xlsx) ==
+    ExcelExtractor -> OpenPyXL: load_workbook(file_path, data_only=True)
+    activate OpenPyXL
+    note right: data_only=True gets calculated values instead of formulas
+    
+    loop Traverse all worksheets
+        ExcelExtractor -> OpenPyXL: Get worksheet name list
+        ExcelExtractor -> OpenPyXL: Access worksheet wb[sheet_name]
+        ExcelExtractor -> OpenPyXL: Get worksheet data sheet.values
+        
+        ExcelExtractor -> Pandas: Create DataFrame(data, columns=cols)
+        activate Pandas
+        Pandas -> Pandas: dropna(how="all", inplace=True)
+        note right: Delete completely blank rows
+        
+        loop Traverse each row of data
+            ExcelExtractor -> Pandas: iterrows() get row data
+            
+            loop Traverse each cell in row
+                ExcelExtractor -> Pandas: Check cell value pd.notna(v)
+                
+                alt Cell has hyperlink
+                    ExcelExtractor -> OpenPyXL: Get cell object sheet.cell()
+                    ExcelExtractor -> OpenPyXL: Check cell.hyperlink
+                    ExcelExtractor -> ExcelExtractor: Format as [value](link)
+                    note right: Generate Markdown link format
+                else Normal cell
+                    ExcelExtractor -> ExcelExtractor: Format as "column_name":"value"
+                end
+            end
+            
+            ExcelExtractor -> ExcelExtractor: Join cell data with semicolons
+            note right: Format: "column_name1":"value1";"column_name2":"value2"
+            
+            ExcelExtractor -> ExcelExtractor: Create Document object
+            note right
+            Document contains:
+            - page_content: row data string
+            - metadata: {"source": file_path}
+            end note
+        end
+        
+        deactivate Pandas
+    end
+    deactivate OpenPyXL
+
+else .xls file processing
+    == 4b. XLS File Processing (.xls) ==
+    ExcelExtractor -> Pandas: pd.ExcelFile(file_path, engine="xlrd")
+    activate Pandas
+    ExcelExtractor -> XLRD: Use xlrd engine to read legacy Excel
+    activate XLRD
+    
+    loop Traverse all worksheets
+        ExcelExtractor -> Pandas: excel_file.parse(sheet_name)
+        ExcelExtractor -> Pandas: dropna(how="all", inplace=True)
+        
+        loop Traverse each row of data
+            ExcelExtractor -> Pandas: iterrows() get row data
+            
+            loop Traverse each cell in row
+                ExcelExtractor -> Pandas: Check pd.notna(v)
+                ExcelExtractor -> ExcelExtractor: Format as "column_name":"value"
+                note right: .xls format does not support hyperlink detection
+            end
+            
+            ExcelExtractor -> ExcelExtractor: Join cell data with semicolons
+            ExcelExtractor -> ExcelExtractor: Create Document object
+        end
+    end
+    
+    deactivate XLRD
+    deactivate Pandas
+end
+
+== 5. Return Processing Results ==
+ExcelExtractor -> ExcelExtractor: Collect all Document objects
+ExcelExtractor --> IndexingRunner: Return Document list
+deactivate ExcelExtractor
+
+note right of IndexingRunner
+**Excel Processing Features**:
+- Generate Document objects by row
+- Format each row as key-value pairs
+- Support multi-worksheet processing
+- Convert hyperlinks to Markdown format
+- Automatically skip empty rows
+end note
+
+== 6. Subsequent Standard Process ==
+IndexingRunner -> IndexingRunner: Text segmentation processing
+note right: Each Document is typically one row of data, no segmentation needed
+
+IndexingRunner -> IndexingRunner: Vectorization processing
+note right: Convert structured data to vectors
+
+IndexingRunner -> Database: Store DocumentSegment records
+note right: Each Excel row corresponds to one Segment
+
+IndexingRunner -> Database: Update document status to COMPLETED
+deactivate IndexingRunner
+
+== 7. Query Example ==
+User -> DatasetService: Query rows containing specific data
+DatasetService -> DatasetService: Vector search for matching rows
+DatasetService --> User: Return related Excel row data
+note right: Format: "column_name1":"value1";"column_name2":"value2"
+
+== Excel vs Other Document Types Comparison ==
+note over ExcelExtractor, Database
+**Excel Document Special Processing**:
+1. **Row-level Processing**: Generate one Document object per row
+2. **Structured Data**: Key-value pair format, easy to query
+3. **Multi-worksheets**: Support multiple tables in one file
+4. **Hyperlink Preservation**: .xlsx supports hyperlink extraction
+5. **Data Types**: Maintain original data types and formats
+
+**Differences from Other Documents**:
+- **Word/PDF**: Continuous text, segmented by paragraphs
+- **Excel**: Structured data, processed by rows
+- **CSV**: Similar processing but simpler
+- **Table Advantage**: Natural structured data, easy for precise queries
+end note
+
+== Configuration and Optimization ==
+note over User, Database
+**Excel Processing Configuration**:
+- Supported formats: .xlsx, .xls
+- Dependencies: openpyxl, pandas, xlrd
+- Data types: Automatic detection and preservation
+- Memory optimization: Consider chunked processing for large files
+
+**Performance Optimization Suggestions**:
+- Process large Excel files by worksheet
+- Automatically skip empty rows
+- Optimize data type storage
+- Batch Document generation
+end note
+
+@enduml

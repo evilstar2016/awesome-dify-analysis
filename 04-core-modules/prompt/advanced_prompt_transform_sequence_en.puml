@@ -1,0 +1,172 @@
+@startuml AdvancedPromptTransform_Sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding      6
+skinparam ParticipantPadding    30
+
+title AdvancedPromptTransform Core Process Sequence Diagram
+
+actor "Workflow Node" as Node
+participant "LLMNode / BaseAppRunner" as Caller
+participant "AdvancedPromptTransform" as Advanced
+participant "PromptTemplateParser" as Parser
+participant "Jinja2Formatter" as Jinja
+participant "TokenBufferMemory" as Memory
+participant "VariablePool" as VarPool
+
+== 1. Initialization Phase ==
+
+Node -> Caller: Execute LLM node
+activate Caller
+
+Caller -> Advanced: new AdvancedPromptTransform(with_variable_tmpl=True)
+activate Advanced
+
+Caller -> Advanced: get_prompt(prompt_template, inputs, query, files, context, memory_config, memory, model_config)
+
+== 2. Template Type Determination ==
+
+Advanced -> Advanced: Determine prompt_template type
+
+alt prompt_template is list[ChatModelMessage]
+    Advanced -> Advanced: _get_chat_model_prompt_messages()
+
+    == 3a. Chat Mode Processing ==
+
+    loop Iterate through each ChatModelMessage
+        Advanced -> Advanced: Get raw_prompt and edition_type
+
+        alt edition_type == "basic" or null
+            alt with_variable_tmpl == true
+                Advanced -> VarPool: Build variable pool from inputs
+                activate VarPool
+                VarPool --> Advanced: variable_pool
+                deactivate VarPool
+
+                Advanced -> VarPool: convert_template(raw_prompt)
+                activate VarPool
+                VarPool --> Advanced: formatted_prompt
+                deactivate VarPool
+            else with_variable_tmpl == false
+                Advanced -> Parser: new PromptTemplateParser(raw_prompt)
+                activate Parser
+                Parser --> Advanced: parser
+                deactivate Parser
+
+                Advanced -> Advanced: _set_context_variable()
+
+                Advanced -> Parser: format(prompt_inputs)
+                activate Parser
+                Parser --> Advanced: formatted_prompt
+                deactivate Parser
+            end
+        else edition_type == "jinja2"
+            Advanced -> Jinja: format(template, inputs)
+            activate Jinja
+            Jinja --> Advanced: formatted_prompt
+            deactivate Jinja
+        end
+
+        Advanced -> Advanced: Create corresponding role PromptMessage
+        note right
+            role == USER -> UserPromptMessage
+            role == SYSTEM -> SystemPromptMessage
+            role == ASSISTANT -> AssistantPromptMessage
+        end note
+    end
+
+    == 4a. Process Query Template ==
+
+    alt query exists && memory_config.query_prompt_template exists
+        Advanced -> Parser: Parse query_prompt_template
+        activate Parser
+        Parser --> Advanced: formatted_query
+        deactivate Parser
+    end
+
+    == 5a. Append History Messages ==
+
+    alt memory exists && memory_config exists
+        Advanced -> Advanced: _append_chat_histories()
+        Advanced -> Memory: get_history_prompt_messages()
+        activate Memory
+        Memory --> Advanced: history_messages
+        deactivate Memory
+        Advanced -> Advanced: prompt_messages.extend(history_messages)
+    end
+
+else prompt_template is CompletionModelPromptTemplate
+    Advanced -> Advanced: _get_completion_model_prompt_messages()
+
+    == 3b. Completion Mode Processing ==
+
+    Advanced -> Advanced: Get raw_prompt and edition_type
+
+    alt edition_type == "basic" or null
+        Advanced -> Parser: new PromptTemplateParser(raw_prompt)
+        activate Parser
+        Parser --> Advanced: parser
+        deactivate Parser
+
+        Advanced -> Advanced: _set_context_variable()
+
+        alt memory exists && memory_config.role_prefix exists
+            == 4b. Process History Messages ==
+            Advanced -> Advanced: _set_histories_variable()
+
+            Advanced -> Advanced: Calculate remaining tokens
+            Advanced -> Memory: get_history_prompt_text(human_prefix, ai_prefix)
+            activate Memory
+            Memory --> Advanced: histories_text
+            deactivate Memory
+
+            Advanced -> Advanced: prompt_inputs["#histories#"] = histories_text
+        end
+
+        Advanced -> Advanced: _set_query_variable()
+
+        Advanced -> Parser: format(prompt_inputs)
+        activate Parser
+        Parser --> Advanced: formatted_prompt
+        deactivate Parser
+    else edition_type == "jinja2"
+        Advanced -> Jinja: format(template, inputs)
+        activate Jinja
+        Jinja --> Advanced: formatted_prompt
+        deactivate Jinja
+    end
+
+    Advanced -> Advanced: Create UserPromptMessage
+end
+
+== 6. Process File Attachments ==
+
+alt files exist
+    Advanced -> Advanced: Build PromptMessageContents
+    loop For each file
+        Advanced -> Advanced: file_manager.to_prompt_message_content(file)
+    end
+    Advanced -> Advanced: Add TextPromptMessageContent
+end
+
+== 7. Add Final Query ==
+
+alt query exists
+    Advanced -> Advanced: Add UserPromptMessage(query)
+end
+
+Advanced --> Caller: prompt_messages
+deactivate Advanced
+
+Caller --> Node: prompt_messages
+deactivate Caller
+
+@enduml

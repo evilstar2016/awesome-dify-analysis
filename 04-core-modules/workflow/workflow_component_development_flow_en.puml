@@ -1,0 +1,199 @@
+@startuml Dify Workflow Component Development Flow
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding      6
+skinparam ParticipantPadding    30
+
+title Dify Workflow Component Development Flow Sequence Diagram
+
+actor Developer as dev
+box "Backend (Python)" #E3F2FD
+    participant "entities.py\n(Node Data Model)" as entities
+    participant "your_node.py\n(Node Implementation)" as node
+    participant "enums.py\n(Node Type Enum)" as enums
+    participant "node_mapping.py\n(Node Mapping)" as mapping
+end box
+
+box "Frontend (TypeScript/React)" #E8F5E9
+    participant "types.ts\n(Type Definitions)" as ftypes
+    participant "default.ts\n(Default Config)" as fdefault
+    participant "node.tsx\n(Node Component)" as fnode
+    participant "panel.tsx\n(Config Panel)" as fpanel
+    participant "components.ts\n(Component Registration)" as fcomponents
+end box
+
+box "Resources" #FFF3E0
+    participant "i18n\n(Internationalization)" as i18n
+    participant "tests\n(Tests)" as tests
+end box
+
+== 1. Backend Development Phase ==
+
+dev -> entities : 1.1 Create node data model
+activate entities
+note right of entities
+  Inherit BaseNodeData
+  Define configuration fields:
+  - variables
+  - node-specific configuration
+end note
+entities --> dev : YourNodeData class
+deactivate entities
+
+dev -> node : 1.2 Implement node class
+activate node
+note right of node
+  Inherit Node base class
+  Implement core methods:
+  - init_node_data()
+  - _run()
+  - version()
+  - get_default_config()
+end note
+node -> entities : Reference YourNodeData
+node --> dev : YourNode class
+deactivate node
+
+dev -> enums : 1.3 Register node type
+activate enums
+note right of enums
+  Add to NodeType enum:
+  YOUR_NODE = "your-node"
+end note
+enums --> dev : NodeType.YOUR_NODE
+deactivate enums
+
+dev -> mapping : 1.4 Register node mapping
+activate mapping
+note right of mapping
+  Add to NODE_TYPE_CLASSES_MAPPING:
+  NodeType.YOUR_NODE: {
+    LATEST_VERSION: YourNode,
+    "1": YourNode,
+  }
+end note
+mapping -> node : Reference YourNode
+mapping --> dev : Mapping completed
+deactivate mapping
+
+== 2. Frontend Development Phase ==
+
+dev -> ftypes : 2.1 Define node types
+activate ftypes
+note right of ftypes
+  Add to BlockEnum:
+  YourNode = 'your-node'
+
+  Create types.ts:
+  export type YourNodeType = CommonNodeType & {...}
+end note
+ftypes --> dev : BlockEnum.YourNode
+deactivate ftypes
+
+dev -> fdefault : 2.2 Create default configuration
+activate fdefault
+note right of fdefault
+  Define NodeDefault:
+  - metaData (category, sorting)
+  - defaultValue (default values)
+  - checkValid (validation function)
+  - getOutputVars (output variables)
+end note
+fdefault -> ftypes : Reference YourNodeType
+fdefault --> dev : nodeDefault
+deactivate fdefault
+
+dev -> fnode : 2.3 Implement node component
+activate fnode
+note right of fnode
+  Node preview on canvas
+  Display key configuration information
+end note
+fnode -> ftypes : Reference YourNodeType
+fnode --> dev : Node component
+deactivate fnode
+
+dev -> fpanel : 2.4 Implement configuration panel
+activate fpanel
+note right of fpanel
+  Right-side configuration panel
+  - Variable selector
+  - Configuration inputs
+  - Form validation
+end note
+fpanel -> ftypes : Reference YourNodeType
+fpanel --> dev : Panel component
+deactivate fpanel
+
+dev -> fcomponents : 2.5 Register components
+activate fcomponents
+note right of fcomponents
+  Add to NodeComponentMap:
+  [BlockEnum.YourNode]: YourNodeNode
+
+  Add to PanelComponentMap:
+  [BlockEnum.YourNode]: YourNodePanel
+end note
+fcomponents -> fnode : Reference Node
+fcomponents -> fpanel : Reference Panel
+fcomponents --> dev : Registration completed
+deactivate fcomponents
+
+== 3. Resource Configuration Phase ==
+
+dev -> i18n : 3.1 Add internationalization text
+activate i18n
+note right of i18n
+  Add to en-US/workflow.ts:
+  nodes.yourNode: {
+    title, description, ...
+  }
+
+  Add translations to other language files
+end note
+i18n --> dev : Internationalization completed
+deactivate i18n
+
+dev -> tests : 3.2 Write tests
+activate tests
+note right of tests
+  Backend unit tests:
+  tests/unit_tests/core/workflow/nodes/
+
+  Use pytest framework
+  Arrange-Act-Assert pattern
+end note
+tests --> dev : Test cases
+deactivate tests
+
+== 4. Validation Phase ==
+
+dev -> dev : 4.1 Local testing
+note right of dev
+  Backend checks:
+  - make lint
+  - make type-check
+  - pytest
+
+  Frontend checks:
+  - pnpm lint
+  - pnpm test
+end note
+
+dev -> dev : 4.2 Functional verification
+note right of dev
+  - Start development environment
+  - Add new node in workflow editor
+  - Configure node parameters
+  - Run workflow to verify
+end note
+
+@enduml

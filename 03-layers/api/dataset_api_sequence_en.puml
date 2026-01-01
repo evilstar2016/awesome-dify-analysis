@@ -1,0 +1,132 @@
+@startuml dify_dataset_api_sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding      6
+skinparam ParticipantPadding    30
+
+title Dify Dataset/Knowledge Base API Call Flow
+
+actor "Client" as client
+participant "API Gateway\n/v1/datasets" as api
+participant "validate_dataset_token\ndecorator" as auth
+participant "DatasetApiResource" as resource
+participant "DatasetService" as dataset_svc
+participant "DocumentService" as doc_svc
+participant "SegmentService" as seg_svc
+database "PostgreSQL" as db
+participant "Celery Worker" as celery
+participant "Vector Store" as vector
+
+== Authentication Phase ==
+
+client -> api: POST /v1/datasets\n(Authorization: Bearer {dataset_token})
+api -> auth: Validate request
+auth -> db: Validate ApiToken (type=dataset)
+db --> auth: token information
+auth -> db: Get tenant and account information
+db --> auth: tenant_account
+auth --> resource: Inject tenant_id
+
+== Create Dataset ==
+
+client -> resource: POST /v1/datasets\n{name, description, indexing_technique}
+resource -> resource: Parse and validate parameters
+resource -> dataset_svc: create_empty_dataset()
+dataset_svc -> db: Insert Dataset record
+db --> dataset_svc: dataset
+dataset_svc --> resource: dataset
+resource --> client: 201 Created\n{dataset_detail}
+
+== Create Document (by File) ==
+
+client -> resource: POST /v1/datasets/{id}/document/create-by-file\n(multipart/form-data)
+resource -> resource: Validate file upload
+resource -> doc_svc: upload_file()
+doc_svc -> db: Create UploadFile record
+doc_svc --> resource: upload_file
+
+resource -> doc_svc: save_document_with_dataset_id()
+doc_svc -> db: Create Document record
+db --> doc_svc: document
+doc_svc -> celery: Trigger indexing task\ndocument_indexing_task.delay()
+celery --> doc_svc: task_id
+
+doc_svc --> resource: {document, batch}
+resource --> client: 200 OK\n{document, batch}
+
+== Asynchronous Indexing Processing ==
+
+celery -> celery: Document parsing\n(PDF/Word/etc.)
+celery -> celery: Text segmentation\n(Splitter)
+celery -> celery: Generate embedding vectors
+celery -> vector: Store vectors
+vector --> celery: Storage successful
+celery -> db: Update Document status\nindexing_status = completed
+
+== Query Indexing Status ==
+
+client -> resource: GET /v1/datasets/{id}/documents/{batch}/indexing-status
+resource -> db: Query Document and Segment status
+db --> resource: Status information
+resource --> client: 200 OK\n{indexing_status, completed_segments, total_segments}
+
+== Create Segments ==
+
+client -> resource: POST /v1/datasets/{id}/documents/{doc_id}/segments\n{segments: [...]}
+resource -> seg_svc: multi_create_segment()
+seg_svc -> db: Create DocumentSegment records
+
+alt High quality indexing
+    seg_svc -> vector: Generate and store vectors
+    vector --> seg_svc: Storage successful
+end
+
+seg_svc --> resource: segments
+resource --> client: 200 OK\n{data: segments, doc_form}
+
+== Retrieval Testing (Hit Testing) ==
+
+client -> resource: POST /v1/datasets/{id}/hit-testing\n{query, retrieval_model}
+resource -> resource: Validate dataset permissions
+resource -> dataset_svc: hit_testing()
+
+alt Vector retrieval
+    dataset_svc -> vector: Similarity search
+    vector --> dataset_svc: Candidate results
+end
+
+alt Reranking enabled
+    dataset_svc -> llm: Rerank model call
+    llm --> dataset_svc: Reranked results
+end
+
+dataset_svc --> resource: Retrieval results
+resource --> client: 200 OK\n{records: [...]}
+
+== Delete Dataset ==
+
+client -> resource: DELETE /v1/datasets/{id}
+resource -> dataset_svc: delete_dataset()
+dataset_svc -> db: Check if dataset is referenced
+
+alt Dataset in use
+    dataset_svc --> resource: DatasetInUseError
+    resource --> client: 409 Conflict
+else Can be deleted
+    dataset_svc -> vector: Delete vector data
+    vector --> dataset_svc: Deletion successful
+    dataset_svc -> db: Delete Dataset and related data
+    db --> dataset_svc: Deletion successful
+    dataset_svc --> resource: True
+    resource --> client: 204 No Content
+end
+
+@enduml

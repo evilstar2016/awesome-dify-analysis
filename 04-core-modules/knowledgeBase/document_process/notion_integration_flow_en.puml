@@ -1,0 +1,217 @@
+@startuml Notion Integration Processing Detailed Sequence Diagram
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #6C757D
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam sequenceLifeLineBorderColor #E3F2FD
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+
+title **Dify Notion Integration Processing Detailed Sequence Diagram**
+
+actor "User" as User
+participant "Dataset Service" as DatasetService
+participant "Indexing Runner" as IndexingRunner
+participant "Notion Extractor" as NotionExtractor
+participant "Notion API" as NotionAPI
+participant "Credential Service" as CredentialService
+database "PostgreSQL" as Database
+
+== 1. Notion Integration Configuration ==
+User -> DatasetService: Configure Notion data source
+activate DatasetService
+DatasetService -> CredentialService: Validate Notion access token
+activate CredentialService
+CredentialService -> NotionAPI: Test API connection
+activate NotionAPI
+NotionAPI --> CredentialService: Return connection status
+deactivate NotionAPI
+CredentialService --> DatasetService: Return validation result
+deactivate CredentialService
+DatasetService --> User: Return configuration status
+deactivate DatasetService
+
+== 2. Create Notion Document Import ==
+User -> DatasetService: POST /datasets/{id}/documents (Notion source)
+activate DatasetService
+DatasetService -> Database: Create DatasetDocument record
+note right
+Data source information includes:
+- notion_workspace_id
+- notion_page_id
+- credential_id
+- page type (page/database)
+end note
+
+DatasetService -> IndexingRunner: Trigger asynchronous import task
+DatasetService --> User: Return task ID
+deactivate DatasetService
+
+== 3. Notion Content Extraction ==
+activate IndexingRunner
+IndexingRunner -> NotionExtractor: Create Notion extractor
+activate NotionExtractor
+NotionExtractor -> CredentialService: Get access token
+activate CredentialService
+CredentialService -> Database: Query data source credentials
+CredentialService --> NotionExtractor: Return access_token
+deactivate CredentialService
+
+NotionExtractor -> NotionExtractor: update_last_edited_time()
+NotionExtractor -> NotionAPI: Get page/database last edited time
+activate NotionAPI
+NotionAPI --> NotionExtractor: Return last_edited_time
+NotionExtractor -> Database: Update document's last_edited_time
+deactivate NotionAPI
+
+alt Notion page processing (page)
+    == 4a. Single Page Content Extraction ==
+    NotionExtractor -> NotionExtractor: _get_notion_block_data()
+    
+    loop Paginated page block retrieval
+        NotionExtractor -> NotionAPI: GET /blocks/{page_id}/children
+        activate NotionAPI
+        note right: Use Notion API v2022-06-28
+        
+        loop Process each block element
+            alt Table block
+                NotionExtractor -> NotionExtractor: _read_table_rows()
+                NotionExtractor -> NotionAPI: Get table row data
+                NotionExtractor -> NotionExtractor: Convert to Markdown table
+                note right: | Header | Header |\n|---|---|\n| Data | Data |
+            else Text block
+                NotionExtractor -> NotionAPI: Extract rich_text content
+                NotionExtractor -> NotionExtractor: Process text formatting
+            else Nested block
+                NotionExtractor -> NotionExtractor: _read_block() recursive processing
+                note right: Support hierarchical structure, use indentation
+            end
+        end
+        
+        NotionAPI --> NotionExtractor: Return block data and pagination info
+        deactivate NotionAPI
+    end
+    
+    NotionExtractor -> NotionExtractor: Assemble complete page content
+    NotionExtractor -> NotionExtractor: Create single Document object
+
+else Notion database processing (database)
+    == 4b. Database Content Extraction ==
+    NotionExtractor -> NotionExtractor: _get_notion_database_data()
+    
+    loop Paginated database record retrieval
+        NotionExtractor -> NotionAPI: POST /databases/{id}/query
+        activate NotionAPI
+        
+        loop Process each record
+            NotionExtractor -> NotionAPI: Get record properties
+            
+            loop Process each property
+                alt multi_select type
+                    NotionExtractor -> NotionExtractor: Extract multi-select value array
+                else rich_text/title type
+                    NotionExtractor -> NotionExtractor: Extract plain text content
+                else select/status type
+                    NotionExtractor -> NotionExtractor: Extract option name
+                else Other types
+                    NotionExtractor -> NotionExtractor: Get property value directly
+                end
+            end
+            
+            NotionExtractor -> NotionExtractor: Format as key-value pair string
+            note right: Format: property_name:value\nproperty_name:value\n...
+            NotionExtractor -> NotionExtractor: Add record page URL
+        end
+        
+        NotionAPI --> NotionExtractor: Return record data and pagination info
+        deactivate NotionAPI
+    end
+    
+    NotionExtractor -> NotionExtractor: Assemble all record content
+    NotionExtractor -> NotionExtractor: Create single Document object
+end
+
+== 5. Return Extraction Results ==
+NotionExtractor --> IndexingRunner: Return Document list
+deactivate NotionExtractor
+
+note right of IndexingRunner
+**Notion Processing Features**:
+- Real-time API data retrieval
+- Support hierarchical structure preservation
+- Table to Markdown format conversion
+- Database record structuring
+- Incremental update support
+end note
+
+== 6. Subsequent Standard Process ==
+IndexingRunner -> IndexingRunner: Text segmentation processing
+note right: Segment based on content length
+
+IndexingRunner -> IndexingRunner: Vectorization processing
+IndexingRunner -> Database: Store DocumentSegment records
+IndexingRunner -> Database: Update document status to COMPLETED
+deactivate IndexingRunner
+
+== 7. Incremental Update Detection ==
+note over User, Database
+**Incremental Update Mechanism**:
+Periodically check Notion page last_edited_time
+If updates found, re-extract and update vector index
+Maintain data synchronization
+end note
+
+User -> DatasetService: Trigger incremental update check
+DatasetService -> NotionExtractor: Check page update time
+NotionExtractor -> NotionAPI: Get latest edit time
+alt Content updated
+    NotionExtractor -> NotionExtractor: Re-extract content
+    NotionExtractor -> IndexingRunner: Trigger re-indexing
+else No content changes
+    NotionExtractor -> NotionExtractor: Skip processing
+end
+
+== Error Handling and Retry ==
+note over NotionExtractor, NotionAPI
+**Notion API Error Handling**:
+1. **Authentication Error**: Check access_token validity
+2. **Permission Error**: Verify page access permissions
+3. **Rate Limiting**: Implement backoff retry mechanism
+4. **Network Error**: Automatic retry and timeout handling
+5. **Data Format**: Compatible with Notion API version changes
+end note
+
+== Notion vs File Upload Comparison ==
+note over User, Database
+**Notion Integration Special Features**:
+1. **External Data Source**: Real-time API retrieval, not file upload
+2. **Structured Content**: Maintain page hierarchy and database structure
+3. **Incremental Updates**: Support content change detection and sync
+4. **Permission Management**: Based on Notion workspace permissions
+5. **Real-time**: Can get latest page content
+
+**Differences from File Processing**:
+- **File**: Static content, one-time processing
+- **Notion**: Dynamic content, support real-time sync
+- **Storage**: Files need local storage, Notion direct from API
+- **Updates**: File re-upload, Notion incremental detection
+end note
+
+== Configuration Requirements ==
+note over CredentialService, NotionAPI
+**Notion Integration Configuration**:
+- Integration Token or OAuth credentials
+- Workspace access permissions
+- Page/database sharing settings
+- API version: 2022-06-28
+
+**Performance Optimization**:
+- Paginated processing of large databases
+- Cache access tokens
+- Batch API calls
+- Incremental sync strategy
+end note
+
+@enduml

@@ -1,0 +1,88 @@
+@startuml dify_chat_api_sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding      6
+skinparam ParticipantPadding    30
+
+title Dify Chat API Call Flow
+
+actor "Client" as client
+participant "API Gateway\n/v1/chat-messages" as api
+participant "validate_app_token\ndecorator" as auth
+participant "ChatApi\nResource" as chat
+participant "AppGenerateService" as service
+participant "AppQueueManager" as queue
+database "PostgreSQL" as db
+participant "LLM Provider" as llm
+
+== Authentication Phase ==
+
+client -> api: POST /v1/chat-messages\n(Authorization: Bearer {token})
+api -> auth: Validate request
+auth -> db: Query ApiToken
+db --> auth: token information
+
+alt Token invalid
+    auth --> client: 401 Unauthorized
+else Token valid
+    auth -> db: Query App
+    db --> auth: app_model
+    auth -> db: Create/Update EndUser
+    db --> auth: end_user
+    auth --> chat: Inject app_model, end_user
+end
+
+== Request Processing Phase ==
+
+chat -> chat: Parse request parameters\n(inputs, query, files, response_mode)
+chat -> chat: Validate app_mode\n(CHAT/AGENT_CHAT/ADVANCED_CHAT)
+
+alt Not a chat app
+    chat --> client: 400 NotChatAppError
+else Chat app
+    chat -> service: generate(app_model, user, args, streaming)
+end
+
+== Generation Phase ==
+
+service -> db: Get/Create Conversation
+db --> service: conversation
+
+alt Blocking mode
+    service -> llm: Call LLM API
+    llm --> service: Complete response
+    service -> db: Save Message
+    service --> chat: response
+    chat --> client: JSON response
+else Streaming mode
+    service -> queue: Create task queue
+    service -> llm: Streaming call to LLM
+    
+    loop Receive streaming data
+        llm --> service: chunk
+        service -> queue: Push chunk
+        service --> client: SSE: data chunk
+    end
+    
+    service -> db: Save complete Message
+    service --> client: SSE: [DONE]
+end
+
+== Stop Generation (Optional) ==
+
+client -> api: POST /v1/chat-messages/{task_id}/stop
+api -> auth: Validate request
+auth --> chat: Validation passed
+chat -> queue: set_stop_flag(task_id)
+queue --> chat: Flag set successfully
+chat --> client: {"result": "success"}
+
+@enduml

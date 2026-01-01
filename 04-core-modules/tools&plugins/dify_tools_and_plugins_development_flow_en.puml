@@ -1,0 +1,161 @@
+@startuml Dify Tools and Plugins Development Flow Sequence Diagram
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding      6
+skinparam ParticipantPadding    30
+
+title Dify Tools and Plugins Development Flow
+
+actor Developer as Developer
+participant "Web Frontend" as Frontend
+participant "API Controller" as Controller
+participant "Tool Management Service" as ToolService
+participant "Tool Manager" as ToolManager
+participant "Tool Engine" as ToolEngine
+participant "Tool Implementation" as ToolImpl
+participant "Database" as Database
+participant "External Service" as External
+
+== Tool Registration and Configuration Phase ==
+
+Developer -> Frontend: Access tool management interface
+Frontend -> Controller: GET /console/api/workspaces/<workspace_id>/tool-providers
+Controller -> ToolService: list_tool_providers()
+ToolService -> ToolManager: list_builtin_providers()
+ToolService -> ToolManager: list_plugin_providers()
+ToolManager -> Database: Query configured tool providers
+Database --> ToolManager: Return tool provider list
+ToolManager --> ToolService: Tool provider information
+ToolService --> Controller: Tool list data
+Controller --> Frontend: JSON response
+Frontend --> Developer: Display tool list
+
+note over Developer, Frontend: Developer can see different types: builtin tools, plugin tools, API tools, etc.
+
+== Builtin Tool Configuration ==
+
+Developer -> Frontend: Configure builtin tools (search, HTTP request, etc.)
+Frontend -> Controller: POST /console/api/workspaces/<workspace_id>/tool-provider/builtin/<provider>/add
+Controller -> ToolService: Validate tool configuration parameters
+ToolService -> ToolManager: get_builtin_provider(provider_name)
+ToolManager -> Database: Save tool configuration and credentials
+Database --> ToolManager: Confirm save
+ToolManager --> ToolService: Configuration successful
+ToolService --> Controller: Return result
+Controller --> Frontend: Configuration success response
+Frontend --> Developer: Display configuration completed
+
+== API Tool Development ==
+
+Developer -> Frontend: Create custom API tool
+Frontend -> Controller: POST /console/api/workspaces/<workspace_id>/tool-provider/api
+note over Controller: Contains API specification (OpenAPI/Swagger)
+Controller -> ToolService: Validate API specification
+ToolService -> ToolManager: get_api_provider_controller()
+ToolManager -> External: Validate API endpoint accessibility
+External --> ToolManager: Validation result
+ToolManager -> Database: Save API tool configuration
+Database --> ToolManager: Confirm save
+ToolManager --> ToolService: API tool creation successful
+ToolService --> Controller: Return API tool information
+Controller --> Frontend: Creation success response
+Frontend --> Developer: Display API tool created
+
+== Plugin Tool Development ==
+
+Developer -> Frontend: Upload plugin tool package
+Frontend -> Controller: POST /console/api/workspaces/<workspace_id>/tool-provider/plugin
+Controller -> ToolService: Validate plugin package
+ToolService -> ToolManager: get_plugin_provider()
+ToolManager -> ToolManager: Parse plugin manifest
+ToolManager -> Database: Save plugin information
+Database --> ToolManager: Confirm save
+ToolManager --> ToolService: Plugin registration successful
+ToolService --> Controller: Return plugin information
+Controller --> Frontend: Upload success response
+Frontend --> Developer: Display plugin installed
+
+== MCP Tool Configuration ==
+
+Developer -> Frontend: Configure MCP tool server
+Frontend -> Controller: POST /console/api/workspaces/<workspace_id>/tool-provider/mcp
+Controller -> ToolService: Validate MCP server configuration
+ToolService -> ToolManager: get_mcp_provider_controller()
+ToolManager -> External: Connect to MCP server and get tool list
+External --> ToolManager: MCP tool list
+ToolManager -> Database: Save MCP tool configuration
+Database --> ToolManager: Confirm save
+ToolManager --> ToolService: MCP tool configuration successful
+ToolService --> Controller: Return MCP tool information
+Controller --> Frontend: Configuration success response
+Frontend --> Developer: Display MCP tool configured
+
+== Tool Runtime Execution Phase ==
+
+note over Developer, External: Execution flow when users use tools in applications
+
+Developer -> Frontend: Call tool in application
+Frontend -> Controller: POST /service-api/apps/<app_id>/chat-messages
+note over Controller: Contains tool call request
+Controller -> ToolEngine: agent_invoke() or generic_invoke()
+ToolEngine -> ToolManager: get_tool_runtime(provider_type, provider_name, tool_name)
+
+alt Builtin tool
+    ToolManager -> ToolImpl: Create BuiltinTool instance
+    ToolImpl -> ToolEngine: Return tool runtime
+else API tool
+    ToolManager -> ToolImpl: Create ApiTool instance
+    ToolImpl -> ToolEngine: Return tool runtime
+else Plugin tool
+    ToolManager -> ToolImpl: Create PluginTool instance
+    ToolImpl -> ToolEngine: Return tool runtime
+else MCP tool
+    ToolManager -> ToolImpl: Create MCPTool instance
+    ToolImpl -> ToolEngine: Return tool runtime
+end
+
+ToolEngine -> ToolImpl: invoke(user_id, tool_parameters)
+ToolImpl -> External: Call external service/API
+External --> ToolImpl: Return execution result
+ToolImpl --> ToolEngine: Tool execution result
+ToolEngine -> ToolEngine: _convert_tool_response_to_str()
+ToolEngine -> ToolEngine: _extract_tool_response_binary_and_text()
+ToolEngine --> Controller: Formatted tool result
+Controller --> Frontend: Response containing tool result
+Frontend --> Developer: Display tool execution result
+
+== Tool Monitoring and Management ==
+
+Developer -> Frontend: View tool usage statistics
+Frontend -> Controller: GET /console/api/workspaces/<workspace_id>/tool-provider/<provider>/tools
+Controller -> ToolService: Get tool usage statistics
+ToolService -> Database: Query tool call logs
+Database --> ToolService: Tool statistics data
+ToolService --> Controller: Statistics information
+Controller --> Frontend: Tool usage report
+Frontend --> Developer: Display tool performance metrics
+
+== Tool Update and Maintenance ==
+
+Developer -> Frontend: Update tool configuration
+Frontend -> Controller: PUT /console/api/workspaces/<workspace_id>/tool-provider/<provider>
+Controller -> ToolService: Validate new configuration
+ToolService -> ToolManager: Update tool provider configuration
+ToolManager -> Database: Save update
+Database --> ToolManager: Confirm update
+ToolManager -> ToolManager: clear_hardcoded_providers_cache()
+note over ToolManager: Clear cache to ensure new configuration takes effect
+ToolManager --> ToolService: Update successful
+ToolService --> Controller: Return update result
+Controller --> Frontend: Update success response
+Frontend --> Developer: Display configuration updated
+
+@enduml

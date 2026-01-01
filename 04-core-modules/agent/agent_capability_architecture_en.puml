@@ -1,0 +1,163 @@
+@startuml
+!theme plain
+skinparam backgroundColor white
+skinparam defaultFontSize 11
+skinparam roundcorner 8
+
+' Define component colors
+skinparam component {
+    BackgroundColor<<Core>> #E8F5E8
+    BackgroundColor<<Agent>> #E1F5FE
+    BackgroundColor<<Tool>> #FFF3E0
+    BackgroundColor<<Model>> #FCE4EC
+    BackgroundColor<<Storage>> #F1F8E9
+    BackgroundColor<<Interface>> #F3E5F5
+}
+
+skinparam package {
+    BackgroundColor #FAFAFA
+    BorderColor #CCCCCC
+}
+
+title **Dify Agent Capability Technical Components Architecture**\n//Agent Capability Technical Components Architecture//
+
+package "Interface Layer" #F8F9FA {
+    component [REST API\nControllers] as API <<Interface>>
+    component [WebSocket\nStream Handler] as WS <<Interface>>
+    component [Agent Service\nBusiness Logic] as Service <<Interface>>
+}
+
+package "Agent Core Layer" #E8F5E8 {
+    component [Base Agent Runner] as BaseRunner <<Agent>>
+    component [Function Call\nAgent Runner] as FCRunner <<Agent>>
+    component [Chain of Thought\nAgent Runner] as CoTRunner <<Agent>>
+    component [Agent Factory] as AgentFactory <<Agent>>
+    component [Agent Node\nWorkflow Agent Node] as AgentNode <<Agent>>
+}
+
+package "Tool Management Layer" #FFF3E0 {
+    component [Tool Manager] as ToolManager <<Tool>>
+    component [Tool Engine] as ToolEngine <<Tool>>
+    component [Builtin Tools] as BuiltinTools <<Tool>>
+    component [API Tools] as APITools <<Tool>>
+    component [Plugin Tools] as PluginTools <<Tool>>
+    component [Workflow Tools] as WorkflowTools <<Tool>>
+    component [Dataset Retriever] as DatasetTools <<Tool>>
+}
+
+package "Model Integration Layer" #FCE4EC {
+    component [Model Manager] as ModelManager <<Model>>
+    component [LLM Runtime] as LLMRuntime <<Model>>
+    component [Model Providers] as ModelProviders <<Model>>
+    component [Prompt Templates] as PromptTemplates <<Model>>
+}
+
+package "Memory Management Layer" #F1F8E9 {
+    component [Token Buffer Memory] as TokenMemory <<Storage>>
+    component [Agent History] as AgentHistory <<Storage>>
+    component [Conversation Store] as ConversationStore <<Storage>>
+}
+
+package "Data Persistence Layer" #F1F8E9 {
+    database "PostgreSQL" as DB {
+        component [Conversation\nTable] as ConvTable <<Storage>>
+        component [Message\nTable] as MsgTable <<Storage>>
+        component [MessageAgentThought\nTable] as ThoughtTable <<Storage>>
+        component [MessageFile\nTable] as FileTable <<Storage>>
+    }
+    database "Redis" as Redis {
+        component [Session Cache] as SessionCache <<Storage>>
+        component [Tool Cache] as ToolCache <<Storage>>
+    }
+}
+
+package "External Integration Layer" #FAFAFA {
+    cloud "LLM Providers" as LLMProviders {
+        component [OpenAI] as OpenAI
+        component [Anthropic] as Anthropic
+        component [Local Models] as LocalModels
+    }
+    cloud "Tool Providers" as ToolProviders {
+        component [REST APIs] as RestAPIs
+        component [Vector DB] as VectorDB
+        component [File Systems] as FileSystems
+    }
+}
+
+' Connection relationships
+API --> Service : "Call business logic"
+WS --> Service : "Stream data transmission"
+Service --> AgentFactory : "Create agent instance"
+
+AgentFactory --> BaseRunner : "Inherit basic capabilities"
+BaseRunner <|-- FCRunner : "Function Calling implementation"
+BaseRunner <|-- CoTRunner : "Chain of Thought implementation"
+
+FCRunner --> ToolManager : "Get tools"
+CoTRunner --> ToolManager : "Get tools"
+AgentNode --> ToolManager : "Workflow tool calls"
+
+ToolManager --> ToolEngine : "Execute tools"
+ToolManager --> BuiltinTools : "Manage builtin tools"
+ToolManager --> APITools : "Manage API tools"
+ToolManager --> PluginTools : "Manage plugin tools"
+ToolManager --> WorkflowTools : "Manage workflow tools"
+ToolManager --> DatasetTools : "Manage dataset tools"
+
+FCRunner --> ModelManager : "Model inference"
+CoTRunner --> ModelManager : "Model inference"
+ModelManager --> LLMRuntime : "Runtime call"
+LLMRuntime --> ModelProviders : "Provider adaptation"
+
+FCRunner --> TokenMemory : "Memory management"
+CoTRunner --> TokenMemory : "Memory management"
+TokenMemory --> AgentHistory : "History records"
+AgentHistory --> ConversationStore : "Conversation storage"
+
+ConversationStore --> ConvTable : "Persist conversations"
+ConversationStore --> MsgTable : "Persist messages"
+ConversationStore --> ThoughtTable : "Persist thoughts"
+ConversationStore --> FileTable : "Persist files"
+
+ToolCache --> Redis : "Tool cache"
+SessionCache --> Redis : "Session cache"
+
+ModelProviders --> LLMProviders : "External model calls"
+ToolEngine --> ToolProviders : "External tool calls"
+
+' Key process annotations
+note top of FCRunner #E3F2FD
+**Function Calling Process:**
+1. Build tool schema
+2. LLM generates structured calls
+3. Parallel tool execution
+4. Result aggregation and return
+end note
+
+note top of CoTRunner #FFF8E1
+**Chain of Thought Process:**
+1. ReAct prompt template
+2. Chain of thought reasoning
+3. Single-step tool execution
+4. Observation-action loop
+end note
+
+note right of ToolEngine #F3E5F5
+**Tool Execution Features:**
+• Parameter validation and type conversion
+• Error handling and retry mechanism
+• Execution result streaming
+• Tool call tracing
+• Secure sandbox execution environment
+end note
+
+note left of TokenMemory #E8F5E8
+**Memory Management Strategy:**
+• Token count limits
+• Sliding window mechanism
+• Important information retention
+• Context compression algorithm
+• Multi-turn conversation continuity
+end note
+
+@enduml

@@ -1,0 +1,145 @@
+@startuml AgentHistoryPromptTransform_Sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding      6
+skinparam ParticipantPadding    30
+
+title AgentHistoryPromptTransform Core Process Sequence Diagram
+
+actor "Agent Runner" as Agent
+participant "CotAgentRunner /\nFCAgentRunner" as Runner
+participant "AgentHistoryPromptTransform" as Transform
+participant "PromptTransform" as Base
+participant "LargeLanguageModel" as LLM
+participant "TokenBufferMemory" as Memory
+
+== 1. Agent Execution Phase ==
+
+Agent -> Runner: Execute Agent iteration
+activate Runner
+
+Runner -> Runner: Get current prompt_messages
+Runner -> Runner: Get history history_messages
+
+== 2. Initialize History Transformer ==
+
+Runner -> Transform: new AgentHistoryPromptTransform(\n  model_config,\n  prompt_messages,\n  history_messages,\n  memory\n)
+activate Transform
+
+note right of Transform
+    Initialization parameters:
+    - model_config: Model configuration
+    - prompt_messages: Current messages
+    - history_messages: History messages
+    - memory: Token buffer memory
+end note
+
+== 3. Get Processed Prompt ==
+
+Runner -> Transform: get_prompt()
+
+== 4. Extract System Messages ==
+
+Transform -> Transform: Iterate through history_messages
+loop For each history_message
+    alt message is SystemPromptMessage
+        Transform -> Transform: Add to prompt_messages
+        Transform -> Transform: num_system++
+    end
+end
+
+== 5. Check Memory ==
+
+alt memory is empty
+    Transform --> Runner: Return list containing only system messages
+else memory exists
+
+    == 6. Calculate Available Tokens ==
+
+    Transform -> Base: _calculate_rest_token(prompt_messages, model_config)
+    activate Base
+
+    Base -> Base: Get model context size
+    Base -> Base: Get current message token count
+    Base -> Base: Get max_tokens parameter
+    Base -> Base: rest_tokens = context_size - max_tokens - current_tokens
+
+    Base --> Transform: max_token_limit
+    deactivate Base
+
+    == 7. Check if History Messages Exceed Limit ==
+
+    Transform -> LLM: get_num_tokens(history_messages)
+    activate LLM
+    LLM --> Transform: curr_message_tokens
+    deactivate LLM
+
+    alt curr_message_tokens <= max_token_limit
+        Transform --> Runner: Return complete history_messages
+        note right: History messages not exceeded, return directly
+    else curr_message_tokens > max_token_limit
+
+        == 8. Intelligent History Message Trimming ==
+
+        Transform -> Transform: Initialize num_prompt = 0
+
+        loop Iterate history_messages from back to front
+            alt message is SystemPromptMessage
+                Transform -> Transform: Skip system messages
+            else
+                Transform -> Transform: Add to prompt_messages
+                Transform -> Transform: num_prompt++
+
+                alt message is UserPromptMessage
+                    note right
+                        User message marks the start of a conversation round
+                        Check if current accumulated messages exceed limit
+                    end note
+
+                    Transform -> LLM: get_num_tokens(prompt_messages)
+                    activate LLM
+                    LLM --> Transform: curr_tokens
+                    deactivate LLM
+
+                    alt curr_tokens > max_token_limit
+                        Transform -> Transform: Remove this round of messages\nprompt_messages[:-num_prompt]
+                        Transform -> Transform: break exit loop
+                    else
+                        Transform -> Transform: num_prompt = 0
+                        note right: Reset count, prepare for next round
+                    end
+                end
+            end
+        end
+
+        == 9. Reorganize Message Order ==
+
+        Transform -> Transform: message_prompts = prompt_messages[num_system:]
+        Transform -> Transform: message_prompts.reverse()
+        note right: Restore chronological order (old to new)
+
+        Transform -> Transform: Merge system messages and conversation messages
+        note right
+            Final order:
+            1. System messages
+            2. Chronological conversation messages
+        end note
+
+        Transform --> Runner: prompt_messages
+    end
+end
+
+deactivate Transform
+
+Runner --> Agent: Processed prompt_messages
+deactivate Runner
+
+@enduml

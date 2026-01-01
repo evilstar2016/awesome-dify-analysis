@@ -1,0 +1,186 @@
+@startuml AccountPermission_MemberInvite
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title Dify Account Permission Management Core Flow - 2. Member Invitation and Joining
+
+participant Inviter as "Inviter\n(OWNER/ADMIN)"
+participant API as "Invitation API\n(/invite-email)"
+participant AuthService as "Authentication Check"
+participant TenantService as "TenantService\n(Workspace Service)"
+participant RegisterService as "RegisterService\n(Registration Service)"
+participant Database as "Database"
+participant EmailService as "Email Task\n(Celery)"
+participant Invitee as "Invitee\n(Email Receiver)"
+
+autonumber
+
+Inviter ->> API: POST /workspaces/current/members/invite-email\n{emails: [email1, email2], role: "editor"}
+activate API
+
+note over API
+  Decorator checks:
+  - @login_required
+  - @setup_required
+  - @account_initialization_required
+  - @cloud_edition_billing_resource_check("members")
+end note
+
+API ->> AuthService: current_account_with_tenant()
+activate AuthService
+AuthService -->> API: (current_user, current_tenant)
+deactivate AuthService
+
+note over API
+  Permission checks:
+  - Verify current user's role
+  - Confirm if OWNER or ADMIN
+  - Verify role parameter validity
+end note
+
+API ->> TenantService: get_features()
+activate TenantService
+TenantService -->> API: workspace_members feature
+deactivate TenantService
+
+note over API
+  Business logic checks:
+  - Check invitation count does not exceed member limit
+  - Iterate through email list for invitations
+end note
+
+loop For each invitation email
+  API ->> RegisterService: invite_new_member(\n  tenant, email, language, role, inviter)
+  activate RegisterService
+  
+  note over RegisterService
+    1. Check if email already has account
+    2. Generate invitation token (containing email, role, inviter info)
+    3. Token stored in Redis (valid for 24 hours)
+  end note
+  
+  RegisterService ->> Database: Check if account is already in workspace
+  activate Database
+  Database -->> RegisterService: Result
+  deactivate Database
+  
+  alt Account already in workspace
+    RegisterService -->> API: AccountAlreadyInTenantError
+    API ->> API: Record as "success"\nReturn login link
+  else Account does not exist or needs invitation
+    RegisterService ->> RegisterService: token = generate_invitation_token(\n  {email, role, inviter_id})
+    
+    RegisterService ->> RegisterService: Token stored in Redis\nEX 86400 (24 hours)
+    
+    RegisterService ->> EmailService: send_invite_member_mail_task(\n  email, token, workspace_name, language)
+    activate EmailService
+    
+    note over EmailService
+      Generate activation link:
+      {CONSOLE_WEB_URL}/activate?email={encoded_email}&token={token}
+    end note
+    
+    EmailService -->> RegisterService: task_id
+    deactivate EmailService
+    
+    RegisterService -->> API: token
+    
+    API ->> API: Build response\n{status: "success", url, email}
+  end
+  
+  deactivate RegisterService
+end
+
+API -->> Inviter: {result: "success", invitation_results: [...]}\n200 Created
+
+deactivate API
+
+note over Inviter
+  Invitation completed, return URL list containing activation links
+  Inviter can copy links or emails will be sent automatically
+end note
+
+Invitee ->> Invitee: Receive invitation email\nClick activation link
+
+Invitee ->> API: GET /activate?email=...&token=...
+activate API
+
+API ->> RegisterService: get_invitation_if_token_valid(\n  email, token)
+activate RegisterService
+
+note over RegisterService
+  Token verification:
+  1. Get token data from Redis
+  2. Verify email match
+  3. Verify token not expired
+  4. Extract role and inviter info
+end note
+
+RegisterService ->> Database: Check account corresponding to email
+activate Database
+Database -->> RegisterService: Account | null
+deactivate Database
+
+alt Account does not exist (new user)
+  RegisterService ->> Database: Create new account\nAccount(email, name, status=PENDING)
+  activate Database
+  Database -->> RegisterService: new_account
+  deactivate Database
+else Account exists
+  note over RegisterService
+    If user already has account, use directly
+  end note
+end
+
+RegisterService -->> API: {token_valid: true, data: {email, role, inviter_id}}
+deactivate RegisterService
+
+API -->> Invitee: Return activation page\n(Show registration/set password form)
+
+deactivate API
+
+Invitee ->> API: POST /activate\n{email, password, token, language}
+activate API
+
+note over API
+  Activation process:
+  1. Call AccountService.authenticate(\n     email, password, invite_token)
+  2. If invitation token, allow password setting
+  3. Create Tenant if not exists
+  4. Add member to workspace
+end note
+
+API ->> TenantService: create_tenant_member(\n  tenant, account, role)
+activate TenantService
+
+TenantService ->> Database: INSERT INTO tenant_account_joins\n(tenant_id, account_id, role, invited_by)
+activate Database
+Database -->> TenantService: TenantAccountJoin record
+deactivate Database
+
+TenantService -->> API: success
+deactivate TenantService
+
+API -->> Invitee: {result: "success"}\n+ Set-Cookie (access_token, refresh_token)
+
+deactivate API
+
+note over Invitee
+  Activation completed, user now has:
+  1. Created/confirmed account
+  2. Set password (new users)
+  3. Joined workspace, obtained specified role
+  4. Obtained authentication tokens, can login and use
+end note
+
+@enduml

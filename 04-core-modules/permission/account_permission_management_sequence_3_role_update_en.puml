@@ -1,0 +1,179 @@
+@startuml AccountPermission_RoleUpdate
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title Dify Account Permission Management Core Flow - 3. Permission Check and Role Update
+
+participant Operator as "Operator\n(OWNER)"
+participant API as "Role Update API\n(/update-role)"
+participant TenantService as "TenantService\n(Permission Check)"
+participant PermissionCheck as "Permission Verification Engine"
+participant Database as "Database"
+participant Cache as "Billing Cache"
+
+autonumber
+
+Operator ->> API: PUT /workspaces/current/members/{member_id}/update-role\n{role: "admin"}
+activate API
+
+note over API
+  Decorator chain:
+  1. @setup_required
+  2. @login_required
+  3. @account_initialization_required
+end note
+
+API ->> API: current_user = current_account_with_tenant()
+
+API ->> API: Validate role parameter validity\nTenantAccountRole.is_valid_role(role)
+
+alt role invalid
+  API -->> Operator: {code: "invalid-role", message: "Invalid role"}\n400 Bad Request
+  deactivate API
+else role valid
+
+  API ->> Database: SELECT * FROM accounts WHERE id = member_id
+  activate Database
+  Database -->> API: member_account | null
+  deactivate Database
+
+  alt Member does not exist
+    API -->> Operator: 404 Not Found
+    deactivate API
+  else Member exists
+
+    API ->> TenantService: update_member_role(\n  current_tenant, member, new_role, current_user)
+    activate TenantService
+
+    note over TenantService
+      Permission check three steps:
+      1. Check operator permissions
+      2. Check target member
+      3. Check operation type
+    end note
+
+    TenantService ->> PermissionCheck: check_member_permission(\n  tenant, operator, member, action="update")
+    activate PermissionCheck
+
+    note over PermissionCheck
+      Permission matrix check:
+      - Action: update
+      - Allowed roles: [OWNER]
+      - Not allowed: ADMIN, EDITOR, NORMAL, DATASET_OPERATOR
+    end note
+
+    PermissionCheck ->> Database: SELECT * FROM tenant_account_joins\nWHERE tenant_id = ? AND account_id = operator_id
+    activate Database
+    Database -->> PermissionCheck: join_record
+    deactivate Database
+
+    alt join_record empty or role not in [OWNER]
+      PermissionCheck -->> TenantService: NoPermissionError
+      TenantService -->> API: NoPermissionError
+      API -->> Operator: {code: "forbidden", message: "No permission to update member"}\n403 Forbidden
+      deactivate PermissionCheck
+      deactivate TenantService
+      deactivate API
+    else Operator permission verification passed
+
+      PermissionCheck -->> TenantService: permission verified
+      deactivate PermissionCheck
+
+      note over TenantService
+        Permission check passed, execute role update
+      end note
+
+      TenantService ->> Database: SELECT * FROM tenant_account_joins\nWHERE tenant_id = ? AND account_id = member_id
+      activate Database
+      Database -->> TenantService: target_member_join
+      deactivate Database
+
+      alt target_member_join does not exist
+        TenantService -->> API: MemberNotInTenantError
+        API -->> Operator: {code: "member-not-found"}\n404 Not Found
+        deactivate TenantService
+        deactivate API
+      else Member relationship exists
+
+        alt new_role == current_role
+          TenantService -->> API: RoleAlreadyAssignedError
+          API -->> Operator: {code: "error"}\n400 Bad Request
+          deactivate TenantService
+          deactivate API
+        else Roles different, execute update
+
+          alt new_role == "owner"
+            note over TenantService
+              Ownership transfer process:
+              1. Find current OWNER
+              2. Demote to ADMIN
+              3. Promote target member to OWNER
+            end note
+
+            TenantService ->> Database: SELECT * FROM tenant_account_joins\nWHERE tenant_id = ? AND role = "owner"
+            activate Database
+            Database -->> TenantService: current_owner_join
+            deactivate Database
+
+            alt Current owner exists
+              TenantService ->> Database: UPDATE tenant_account_joins\nSET role = "admin" WHERE id = current_owner_join.id
+              activate Database
+              Database -->> TenantService: updated
+              deactivate Database
+            end
+
+          end
+
+          note over TenantService
+            Update target member's role
+          end note
+
+          TenantService ->> Database: UPDATE tenant_account_joins\nSET role = ?\nWHERE tenant_id = ? AND account_id = ?
+          activate Database
+          Database -->> TenantService: rows_updated = 1
+          deactivate Database
+
+          TenantService ->> Database: COMMIT transaction
+          activate Database
+          Database -->> TenantService: success
+          deactivate Database
+
+          TenantService ->> Cache: BillingService.clean_billing_info_cache(\n  tenant_id)
+          activate Cache
+          Cache -->> TenantService: cache cleared
+          deactivate Cache
+
+          TenantService -->> API: update completed
+          deactivate TenantService
+
+          API -->> Operator: {result: "success"}\n200 OK
+          deactivate API
+
+        end
+
+      end
+
+    end
+
+  end
+
+end
+
+note over Operator
+  Role update completed:
+  - New permissions take effect immediately
+  - Billing cache cleared
+  - User needs to re-acquire token on next request
+end note
+
+@enduml

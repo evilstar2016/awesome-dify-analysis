@@ -1,0 +1,229 @@
+@startuml Excel Document Import Flow
+!theme plain
+skinparam backgroundColor white
+skinparam sequenceArrowColor black
+skinparam sequenceLifeLineBackgroundColor white
+skinparam sequenceLifeLineBorderColor black
+skinparam sequenceParticipantBackgroundColor lightblue
+
+title Excel Document Detailed Import Flow
+
+actor "User" as User
+participant "Frontend Web" as Web
+participant "DatasetInitApi" as API
+participant "DocumentService" as DocService
+participant "IndexingRunner" as Runner
+participant "IndexProcessorFactory" as Factory
+participant "ExcelExtractor" as Extractor
+participant "TextSplitter" as Splitter
+participant "DatasetDocumentStore" as DocStore
+participant "Vector Database" as VDB
+participant "PostgreSQL" as DB
+
+== 1. Document Upload Phase ==
+User -> Web: Select Excel file to upload
+Web -> API: POST /datasets/init\n{upload_file_id, indexing_technique, process_rule}
+note right
+  Request parameters include:
+  - upload_file_id: file ID
+  - indexing_technique: high_quality/economy
+  - process_rule: segmentation rules
+  - doc_form: text_model/hierarchical_model
+end note
+
+API -> API: Validate user permissions and configuration
+note right
+  Validation content:
+  - Does user have dataset editing permissions
+  - embedding model configuration (high quality indexing)
+  - document upload quota limits
+end note
+
+== 2. Dataset Creation Phase ==
+API -> DocService: save_document_without_dataset_id()
+DocService -> DB: Create Dataset record
+note right
+  Dataset attributes:
+  - tenant_id, name
+  - data_source_type: upload_file
+  - indexing_technique
+  - embedding_model/provider
+  - collection_binding_id
+end note
+
+DocService -> DocService: save_document_with_dataset_id()
+DocService -> DB: Create Document record
+note right
+  Document attributes:
+  - dataset_id, name, data_source_info
+  - doc_form (text_model/hierarchical_model)
+  - doc_language, indexing_status: waiting
+  - batch: batch identifier
+end note
+
+== 3. Asynchronous Indexing Processing Phase ==
+DocService -> Runner: Trigger indexing task asynchronously
+note right
+  IndexingRunner.run()
+  Process document list
+end note
+
+Runner -> Runner: run_in_splitting_status()
+note right
+  Update status: indexing_status = splitting
+end note
+
+== 4. Document Extraction Phase ==
+Runner -> Factory: IndexProcessorFactory(doc_form)
+Factory -> Factory: init_index_processor()
+note right
+  Select processor based on doc_form:
+  - text_model → ParagraphIndexProcessor
+  - hierarchical_model → ParentChildIndexProcessor
+  - qa_model → QAIndexProcessor
+end note
+
+Runner -> Runner: _extract()
+Runner -> Extractor: ExcelExtractor.extract()
+
+note over Extractor
+**Excel Processing Core Logic**
+1. Detect file type (.xlsx/.xls)
+2. Use openpyxl/pandas to read
+3. Traverse worksheets
+4. Process data row by row
+end note
+
+Extractor -> Extractor: Process .xlsx file
+note right
+  Use openpyxl.load_workbook()
+  - data_only=True gets calculated values
+  - Extract hyperlink information
+  - Support multiple worksheets
+end note
+
+Extractor -> Extractor: Process each row of data
+note right
+  **Row Data Conversion Format**:
+  Original: | Product Name | Price | Description |
+           | Laptop A    | 5000  | High Performance |
+  
+  Convert to: "Product Name":"Laptop A";"Price":"5000";"Description":"High Performance"
+end note
+
+Extractor -> Runner: Return Document list
+note right
+  Each row of data = one Document object
+  page_content = key-value pair string
+  metadata = {source: file_path}
+end note
+
+== 5. Document Transformation Phase ==
+Runner -> Runner: _transform()
+Runner -> Splitter: TextSplitter processing
+
+note over Splitter
+**Text Segmentation Processing**
+1. Default chunk_size=4000 characters
+2. chunk_overlap=200 characters  
+3. Segmentation priority: \n\n → \n → space → character level
+4. Maintain key-value pair structure integrity
+end note
+
+Splitter -> Splitter: split_documents()
+note right
+  **Segmentation Risk Assessment**:
+  - Single row < 4000 characters: keep intact
+  - Single row > 4000 characters: may split by spaces
+  - Risk: break "column_name":"value" structure
+end note
+
+Splitter -> Runner: Return segmented Documents
+
+Runner -> Runner: Generate doc_id and hash
+note right
+  Generate for each chunk:
+  - doc_id: UUID
+  - doc_hash: content hash
+  - clean leading symbols
+end note
+
+== 6. Segment Storage Phase ==
+Runner -> Runner: _load_segments()
+Runner -> DocStore: DatasetDocumentStore.add_documents()
+
+DocStore -> DB: Save DocumentSegment records
+note right
+  DocumentSegment attributes:
+  - dataset_id, document_id
+  - content: segment content
+  - word_count, tokens
+  - position: paragraph position
+  - index_node_id: vector index ID
+  - status: completed
+end note
+
+alt Parent-child segmentation mode
+    DocStore -> DB: Save ChildChunk records
+    note right
+      ChildChunk attributes:
+      - segment_id, position
+      - content: child chunk content
+      - index_node_id: vector index ID
+    end note
+end
+
+== 7. Vector Indexing Phase ==
+Runner -> Runner: _load()
+
+alt High quality indexing (high_quality)
+    Runner -> Runner: Process chunks concurrently
+    note right
+      ThreadPoolExecutor(max_workers=10)
+      Group by content hash to avoid deadlock
+    end note
+    
+    loop For each chunk group
+        Runner -> VDB: Create vector index
+        note right
+          Generate vectors using embedding model
+          Store in vector database
+          (Weaviate/Qdrant/Milvus etc.)
+        end note
+    end
+end
+
+alt Economy indexing (economy)
+    Runner -> DB: Create keyword index
+    note right
+      Use jieba tokenization
+      Create inverted index
+      Store in PostgreSQL
+    end note
+end
+
+== 8. Complete Processing ==
+Runner -> DB: Update Document status
+note right
+  Update attributes:
+  - indexing_status: completed
+  - completed_at: current time
+  - tokens: total token count
+  - indexing_latency: processing time
+end note
+
+DB -> API: Return processing results
+API -> Web: Return success response
+Web -> User: Display import completed
+
+note over User, VDB
+**Excel Import Key Features**:
+1. Maintain header semantics: each value has corresponding column name
+2. Row-level integrity: single row data not scattered across Documents  
+3. Structured storage: key-value pair format for easy retrieval
+4. Support hyperlinks: xlsx files preserve link information
+5. Multiple worksheets: automatically process all worksheets
+6. Error handling: skip empty rows and invalid data
+end note
+
+@enduml

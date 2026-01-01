@@ -1,0 +1,169 @@
+@startuml Word Document Import Flow
+!theme plain
+title Dify Knowledge Base Word Document Import Flow
+
+!define LIGHTBLUE #E1F5FE
+!define LIGHTGREEN #E8F5E8
+!define LIGHTRED #FFEBEE
+!define LIGHTYELLOW #FFF8E1
+
+participant "User" as User
+box "Frontend Layer" LIGHTBLUE
+    participant "Web UI" as WebUI
+end box
+
+box "API Controller Layer" LIGHTGREEN
+    participant "DatasetDocumentListApi" as DocAPI
+    participant "DocumentApi" as DocumentController
+end box
+
+box "Service Layer" LIGHTYELLOW
+    participant "DatasetService" as DatasetSvc
+    participant "DocumentService" as DocumentSvc
+    participant "IndexingRunner" as IndexRunner
+end box
+
+box "Document Processing Layer" LIGHTRED
+    participant "ExtractProcessor" as ExtractProc
+    participant "WordExtractor" as WordExt
+    participant "UnstructuredWordExtractor" as UnstructWordExt
+end box
+
+box "Index Processing Layer" LIGHTGREEN
+    participant "IndexProcessorFactory" as IndexFactory
+    participant "ParagraphIndexProcessor" as ParaProcessor
+    participant "TextSplitter" as Splitter
+end box
+
+box "Storage Layer" LIGHTBLUE
+    participant "Storage" as Storage
+    participant "VectorDB" as VectorDB
+    participant "Database" as DB
+end box
+
+== Document Upload Phase ==
+
+User -> WebUI: Select Word document to upload
+WebUI -> DocAPI: POST /datasets/{dataset_id}/documents
+note right: Contains file information and processing rules
+
+DocAPI -> DatasetSvc: Validate dataset permissions
+DatasetSvc --> DocAPI: Permission validation passed
+
+DocAPI -> DocumentSvc: create_document()
+DocumentSvc -> DB: Create Document record
+note right: Status: waiting
+DocumentSvc -> Storage: Save file to storage
+DocumentSvc --> DocAPI: Return Document ID
+
+DocAPI -> IndexRunner: Trigger asynchronous indexing task
+note right: Start Celery task
+
+== Document Parsing Phase ==
+
+IndexRunner -> IndexRunner: run()
+IndexRunner -> DB: Query Document and ProcessRule
+IndexRunner -> DB: Update status to "parsing"
+
+IndexRunner -> IndexFactory: Create processor based on doc_form
+IndexFactory --> IndexRunner: Return ParagraphIndexProcessor
+
+IndexRunner -> ParaProcessor: extract()
+ParaProcessor -> ExtractProc: ExtractProcessor.extract()
+
+alt File extension check
+    ExtractProc -> ExtractProc: Check ETL_TYPE configuration
+    
+    alt ETL_TYPE == "Unstructured"
+        alt File extension == ".docx"
+            ExtractProc -> WordExt: WordExtractor()
+            note right: Use python-docx library
+        else File extension == ".doc"
+            ExtractProc -> UnstructWordExt: UnstructuredWordExtractor()
+            note right: Use Unstructured API
+        end
+    else ETL_TYPE != "Unstructured"
+        alt File extension == ".docx"
+            ExtractProc -> WordExt: WordExtractor()
+        end
+    end
+end
+
+== Word Document Content Extraction ==
+
+alt WordExtractor processing (.docx)
+    WordExt -> WordExt: parse_docx()
+    WordExt -> WordExt: _extract_images_from_docx()
+    note right: Extract and save images to storage
+    
+    loop Traverse document elements
+        WordExt -> WordExt: Process paragraphs
+        WordExt -> WordExt: Process tables (_table_to_markdown)
+        WordExt -> WordExt: Process images (insert Markdown links)
+        WordExt -> WordExt: Process hyperlinks
+    end
+    
+    WordExt -> Storage: Save extracted images
+    WordExt -> DB: Create UploadFile record
+    WordExt --> ExtractProc: Return Document list
+else UnstructuredWordExtractor processing (.doc)
+    UnstructWordExt -> UnstructWordExt: partition_via_api()
+    note right: Call Unstructured API
+    UnstructWordExt -> UnstructWordExt: chunk_by_title()
+    UnstructWordExt --> ExtractProc: Return Document list
+end
+
+ExtractProc --> ParaProcessor: Return extracted documents
+
+IndexRunner -> DB: Update status to "splitting"
+
+== Document Segmentation Phase ==
+
+IndexRunner -> ParaProcessor: transform()
+ParaProcessor -> ParaProcessor: Get processing rules
+ParaProcessor -> ParaProcessor: Create TextSplitter
+
+loop For each document
+    ParaProcessor -> ParaProcessor: CleanProcessor.clean()
+    note right: Clean document content
+    ParaProcessor -> Splitter: split_documents()
+    note right: Segment according to rules
+    
+    loop For each segment
+        ParaProcessor -> ParaProcessor: Generate doc_id and hash
+        ParaProcessor -> ParaProcessor: Clean leading symbols
+    end
+end
+
+ParaProcessor --> IndexRunner: Return segmented documents
+
+== Document Storage Phase ==
+
+IndexRunner -> IndexRunner: _load_segments()
+IndexRunner -> DB: Save DocumentSegment records
+
+IndexRunner -> ParaProcessor: load()
+
+alt High quality indexing
+    ParaProcessor -> VectorDB: Create vector index
+    note right: Use embedding model
+end
+
+alt Keyword indexing
+    ParaProcessor -> ParaProcessor: Extract keywords
+    ParaProcessor -> DB: Save keyword index
+end
+
+IndexRunner -> DB: Update status to "completed"
+
+IndexRunner --> DocAPI: Indexing completed
+DocAPI --> WebUI: Return processing results
+WebUI --> User: Display import success
+
+== Error Handling ==
+
+note over IndexRunner, DB: When any stage encounters error
+IndexRunner -> DB: Update status to "error"
+IndexRunner -> DB: Record error information
+
+@enduml

@@ -1,0 +1,145 @@
+@startuml Prompt_Template_Parser_Sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding      6
+skinparam ParticipantPadding    30
+
+title PromptTemplateParser Template Parsing Process Sequence Diagram
+
+actor "PromptTransform" as Transform
+participant "PromptTemplateParser" as Parser
+participant "Regex Engine" as Regex
+
+== 1. Create Parser ==
+
+Transform -> Parser: new PromptTemplateParser(template, with_variable_tmpl=False)
+activate Parser
+
+Parser -> Parser: Save template
+Parser -> Parser: Save with_variable_tmpl
+
+alt with_variable_tmpl == True
+    Parser -> Parser: regex = WITH_VARIABLE_TMPL_REGEX
+    note right
+        Support Workflow variable syntax:
+        {{#node_id.variable_name#}}
+    end note
+else with_variable_tmpl == False
+    Parser -> Parser: regex = REGEX
+    note right
+        Standard variable syntax:
+        {{variable_name}}
+        {{#special#}}
+    end note
+end
+
+== 2. Extract Variables ==
+
+Parser -> Parser: variable_keys = extract()
+
+Parser -> Regex: re.findall(regex, template)
+activate Regex
+
+note over Regex
+    Regular expression matching rules:
+
+    REGEX:
+    \{\{([a-zA-Z_][a-zA-Z0-9_]{0,29}|#histories#|#query#|#context#)\}\}
+
+    WITH_VARIABLE_TMPL_REGEX:
+    \{\{([a-zA-Z_][a-zA-Z0-9_]{0,29}|
+        #[a-zA-Z0-9_]{1,50}\.[a-zA-Z0-9_\.]{1,100}#|
+        #histories#|#query#|#context#)\}\}
+end note
+
+Regex --> Parser: variable_keys
+deactivate Regex
+
+note right of Parser
+    Example:
+    Template: "Hello {{name}}, context: {{#context#}}"
+    Extract: ["name", "#context#"]
+end note
+
+Parser --> Transform: parser instance
+deactivate Parser
+
+== 3. Format Template ==
+
+Transform -> Parser: format(inputs, remove_template_variables=True)
+activate Parser
+
+note right of Transform
+    inputs example:
+    {
+        "name": "Alice",
+        "#context#": "Some context text",
+        "#query#": "User question"
+    }
+end note
+
+Parser -> Parser: Define replacer function
+
+Parser -> Regex: re.sub(regex, replacer, template)
+activate Regex
+
+loop For each matched variable
+    Regex -> Parser: Call replacer(match)
+
+    Parser -> Parser: key = match.group(1)
+    Parser -> Parser: value = inputs.get(key, match.group(0))
+    note right
+        If key not in inputs,
+        keep original match string
+    end note
+
+    alt remove_template_variables == True
+        Parser -> Parser: remove_template_variables(value)
+        note right
+            Convert nested {{var}} to {var}
+            Prevent secondary parsing
+        end note
+    end
+
+    Parser --> Regex: Replaced value
+end
+
+Regex --> Parser: Formatted template
+deactivate Regex
+
+== 4. Clean Special Markers ==
+
+Parser -> Regex: re.sub(r"<\|.*?\|>", "", prompt)
+activate Regex
+note right
+    Remove <|...|> format special markers
+    (Used for model-specific control markers)
+end note
+Regex --> Parser: Cleaned prompt
+deactivate Regex
+
+Parser --> Transform: Final formatted prompt
+deactivate Parser
+
+== Usage Example ==
+
+note over Transform, Parser
+    Input template:
+    "Hello {{name}}! Here is context information:\n{{#context#}}\n\nPlease answer:{{#query#}}"
+
+    Input variables:
+    {"name": "User", "#context#": "Product documentation...", "#query#": "How to use?"}
+
+    Output result:
+    "Hello User! Here is context information:\nProduct documentation...\n\nPlease answer:How to use?"
+end note
+
+@enduml

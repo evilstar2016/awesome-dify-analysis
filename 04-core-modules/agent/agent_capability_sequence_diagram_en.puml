@@ -1,0 +1,145 @@
+@startuml
+!theme plain
+skinparam backgroundColor white
+skinparam defaultFontSize 12
+skinparam sequenceArrowThickness 2
+skinparam roundcorner 10
+skinparam maxmessagesize 250
+
+' Define participant colors
+skinparam participant {
+    BackgroundColor<<User>> #E1F5FE
+    BackgroundColor<<API>> #F3E5F5
+    BackgroundColor<<Agent>> #E8F5E8
+    BackgroundColor<<Tool>> #FFF3E0
+    BackgroundColor<<LLM>> #FCE4EC
+    BackgroundColor<<Memory>> #F1F8E9
+}
+
+title **Dify Agent Capability Core Scenario Sequence Diagram**\n//Function Calling & Chain of Thought Agent Execution Flow//
+
+actor "User" as User <<User>>
+participant "API Controller" as API <<API>>
+participant "Agent Service" as Service <<Agent>>
+participant "Agent Runner\n(FC/CoT)" as Runner <<Agent>>
+participant "Tool Manager" as ToolMgr <<Tool>>
+participant "Tool Engine" as ToolEngine <<Tool>>
+participant "LLM Model" as LLM <<LLM>>
+participant "Memory Buffer" as Memory <<Memory>>
+participant "Database" as DB <<Memory>>
+
+== Agent Initialization Phase ==
+
+User -> API: **POST /chat-messages**\nSend user query
+activate API #FFCCCC
+
+API -> Service: **Create agent conversation**\nget_agent_logs()
+activate Service #CCFFCC
+
+Service -> Runner: **Initialize agent runner**\n- Select strategy (FC/CoT)\n- Load configuration parameters
+activate Runner #CCFFFF
+
+Runner -> ToolMgr: **Get available tools**\nget_agent_tool_runtime()
+activate ToolMgr #FFFFCC
+
+ToolMgr -> ToolMgr: **Tool discovery and validation**\n- Builtin tools\n- API tools\n- Workflow tools\n- Dataset retrieval tools
+
+ToolMgr --> Runner: **Return tool instance list**\nPromptMessageTool[]
+deactivate ToolMgr
+
+Runner -> Memory: **Load conversation history**\norganize_agent_history()
+activate Memory #CCFFCC
+
+Memory -> DB: **Query conversation history**
+activate DB #FFCCFF
+DB --> Memory: **Historical messages**
+deactivate DB
+
+Memory --> Runner: **Format prompt messages**\nPromptMessage[]
+deactivate Memory
+
+== Agent Reasoning and Tool Calling Loop ==
+
+loop **Maximum iterations (max_iteration)**
+
+    Runner -> Runner: **Build prompt message**\n- System prompt\n- Tool descriptions\n- Conversation history\n- Current query
+
+    Runner -> LLM: **LLM reasoning request**\n- Function Calling mode\n- Or CoT/ReAct mode
+    activate LLM #FFCCFF
+
+    alt **Function Calling mode**
+        LLM --> Runner: **Structured tool calls**\n{\n  "tool_calls": [\n    {"name": "tool_name",\n     "arguments": {...}}\n  ]\n}
+    else **CoT/ReAct mode**
+        LLM --> Runner: **Chain of thought response**\nThought: ...\nAction: {"action": "tool_name", \n        "action_input": {...}}\nObservation: ...
+    end
+    deactivate LLM
+
+    alt **Requires tool calls**
+        
+        Runner -> ToolEngine: **Execute tool calls**\nagent_invoke(tool, parameters)
+        activate ToolEngine #FFFFCC
+
+        ToolEngine -> ToolEngine: **Parameter validation**\n- Type checking\n- Required parameter validation\n- Permission validation
+
+        ToolEngine -> ToolEngine: **Tool execution**\n- API calls\n- Database queries\n- File processing\n- Workflow execution
+
+        ToolEngine -> DB: **Record agent thoughts**\nMessageAgentThought
+        activate DB
+        DB --> ToolEngine: **Save successful**
+        deactivate DB
+
+        ToolEngine --> Runner: **Tool execution results**\nToolInvokeMessage
+        deactivate ToolEngine
+
+        Runner -> Runner: **Update agent state**\n- Accumulate LLM usage\n- Update thought records\n- Check continuation conditions
+
+    else **No tool calls needed (final answer)**
+        
+        Runner -> Runner: **Extract final answer**\n- Function Calling: assistant_message\n- CoT: Final Answer action
+        
+        break **End iteration loop**
+    end
+
+end
+
+== Response Generation and Streaming Output ==
+
+Runner -> Service: **Streaming response generation**\nGenerator[LLMResultChunk]
+deactivate Runner
+
+Service -> API: **Agent execution results**\n- Final answer\n- Tool call records\n- Token usage statistics
+deactivate Service
+
+API -> User: **SSE streaming response**\n- Real-time thinking process\n- Tool call status\n- Final answer
+deactivate API
+
+== Post-processing and Storage ==
+
+API -> DB: **Save conversation records**\n- Message\n- MessageAgentThought\n- MessageFile
+activate DB
+DB --> API: **Storage completed**
+deactivate DB
+
+note right of Runner #FFE082
+**Core Technical Components:**
+• **Agent Runner**: Agent execution engine
+• **Tool Manager**: Tool discovery and management
+• **Tool Engine**: Tool execution engine  
+• **Memory Buffer**: Conversation memory management
+• **Prompt Template**: Prompt template system
+• **LLM Integration**: Model integration layer
+• **Stream Processing**: Streaming response processing
+• **Database**: Persistent storage
+end note
+
+note left of LLM #E1BEE7
+**Agent Strategies:**
+• **Function Calling**: 
+  Structured tool calls, precise parameter passing
+• **Chain of Thought**: 
+  Chain of thought reasoning, ReAct mode
+• **Hybrid Mode**: 
+  Adaptive selection based on model capabilities
+end note
+
+@enduml

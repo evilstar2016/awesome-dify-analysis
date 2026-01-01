@@ -1,0 +1,157 @@
+@startuml Prompt_Module_Integration
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding      6
+skinparam ParticipantPadding    30
+
+title Prompt Module and Application Layer Integration Sequence Diagram
+
+actor "User" as User
+participant "API Controller" as API
+participant "ChatAppRunner /\nCompletionAppRunner" as AppRunner
+participant "BaseAppRunner" as BaseRunner
+participant "Prompt Module" as Prompt
+participant "TokenBufferMemory" as Memory
+participant "ModelManager" as ModelMgr
+participant "LLM Provider" as LLM
+
+== 1. User initiates request ==
+
+User -> API: Send chat/completion request
+activate API
+
+API -> AppRunner: run(app_generate_entity)
+activate AppRunner
+
+== 2. Get context and history ==
+
+AppRunner -> AppRunner: Get application configuration
+AppRunner -> AppRunner: Load prompt_template_entity
+
+alt Need RAG context
+    AppRunner -> AppRunner: Execute knowledge base retrieval
+    AppRunner -> AppRunner: context = retrieval results
+end
+
+alt Need conversation history
+    AppRunner -> Memory: Initialize TokenBufferMemory
+    activate Memory
+    Memory --> AppRunner: memory instance
+    deactivate Memory
+end
+
+== 3. Build Prompt ==
+
+AppRunner -> BaseRunner: organize_prompt_messages(\n  app_record,\n  model_config,\n  prompt_template_entity,\n  inputs,\n  files,\n  query,\n  context,\n  memory\n)
+activate BaseRunner
+
+BaseRunner -> BaseRunner: Determine prompt_type
+
+alt prompt_type == SIMPLE
+    note right of BaseRunner
+        Chatbot basic mode
+        Use preset templates
+    end note
+
+    BaseRunner -> Prompt: SimplePromptTransform.get_prompt(...)
+    activate Prompt
+
+    Prompt -> Prompt: Load JSON template rules
+    Prompt -> Prompt: Parse variables
+    Prompt -> Prompt: Build system messages
+
+    alt memory exists
+        Prompt -> Memory: get_history_prompt_messages()
+        activate Memory
+        Memory --> Prompt: History message list
+        deactivate Memory
+        Prompt -> Prompt: Append history messages
+    end
+
+    Prompt -> Prompt: Add user messages
+
+    Prompt --> BaseRunner: (prompt_messages, stops)
+    deactivate Prompt
+
+else prompt_type == ADVANCED
+    note right of BaseRunner
+        Advanced mode
+        Use custom templates
+    end note
+
+    BaseRunner -> BaseRunner: Build prompt_template
+    BaseRunner -> BaseRunner: Build memory_config
+
+    BaseRunner -> Prompt: AdvancedPromptTransform.get_prompt(...)
+    activate Prompt
+
+    Prompt -> Prompt: Iterate through template messages
+    Prompt -> Prompt: Parse variables (Basic/Jinja2)
+    Prompt -> Prompt: Set context variables
+
+    alt memory exists
+        Prompt -> Memory: Get history messages
+        activate Memory
+        Memory --> Prompt: History messages
+        deactivate Memory
+    end
+
+    Prompt -> Prompt: Process file attachments
+    Prompt -> Prompt: Add query messages
+
+    Prompt --> BaseRunner: prompt_messages
+    deactivate Prompt
+
+    BaseRunner -> BaseRunner: stops = model_config.stop
+end
+
+BaseRunner --> AppRunner: (prompt_messages, stops)
+deactivate BaseRunner
+
+== 4. Call LLM ==
+
+AppRunner -> ModelMgr: Get model instance
+activate ModelMgr
+ModelMgr --> AppRunner: model_instance
+deactivate ModelMgr
+
+AppRunner -> AppRunner: recalc_llm_max_tokens()
+note right: Recalculate max_tokens based on prompt length
+
+AppRunner -> LLM: invoke_llm(prompt_messages, stops, ...)
+activate LLM
+
+alt stream == True
+    loop Streaming output
+        LLM --> AppRunner: chunk
+        AppRunner --> API: Push chunk
+        API --> User: SSE event
+    end
+else stream == False
+    LLM --> AppRunner: result
+end
+deactivate LLM
+
+== 5. Save records ==
+
+AppRunner -> AppRunner: Save message records
+note right
+    Use PromptMessageUtil
+    Serialize prompt_messages
+end note
+
+AppRunner --> API: Complete response
+deactivate AppRunner
+
+API --> User: Return result
+deactivate API
+
+@enduml

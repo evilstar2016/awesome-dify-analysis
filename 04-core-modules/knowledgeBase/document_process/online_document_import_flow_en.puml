@@ -1,0 +1,250 @@
+@startuml Online Document Import Flow Sequence Diagram
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding      6
+skinparam ParticipantPadding    30
+
+title **Dify Online Document Import Flow Sequence Diagram**
+
+actor "User" as User
+participant "Frontend\n(Web)" as Frontend
+participant "Dataset Controller\n(DatasetsController)" as Controller
+participant "Dataset Service\n(DocumentService)" as DocumentService
+participant "Celery Task\n(document_indexing_task)" as CeleryTask
+participant "Indexing Runner\n(IndexingRunner)" as IndexingRunner
+participant "Extract Processor\n(ExtractProcessor)" as ExtractProcessor
+participant "Content Extractor\n(Extractor)" as Extractor
+participant "External Data Source\n(External API)" as ExternalAPI
+database "PostgreSQL" as Database
+database "Redis" as Redis
+
+== 1. Online Document Creation Request ==
+User -> Frontend: Select online document source\n(Notion/Website)
+activate Frontend
+
+alt Notion import
+    Frontend -> Controller: POST /datasets/{id}/documents\n(data_source_type: notion_import)
+else Website crawling
+    Frontend -> Controller: POST /datasets/{id}/documents\n(data_source_type: website_crawl)
+end
+activate Controller
+
+note right of Controller
+Supported online data source types:
+- notion_import: Notion page/database
+- website_crawl: Website crawling
+  - Firecrawl
+  - Jina Reader
+  - WaterCrawl
+end note
+
+== 2. Document Record Creation ==
+Controller -> DocumentService: save_document_with_dataset_id()
+activate DocumentService
+
+alt Website crawling
+    DocumentService -> DocumentService: Parse website_info_list
+    note right
+    website_info contains:
+    - provider: firecrawl/jinareader/watercrawl
+    - job_id: crawl task ID
+    - url: target URL
+    - only_main_content: whether main content only
+    - mode: crawl
+    end note
+else Notion import
+    DocumentService -> DocumentService: Parse notion_info_list
+    note right
+    notion_info contains:
+    - workspace_id: workspace ID
+    - pages: [{page_id, type}]
+    - credential_id: credential ID
+    end note
+end
+
+DocumentService -> Database: Create Document record\n(indexing_status: waiting)
+Database --> DocumentService: Return document_id
+
+DocumentService -> CeleryTask: document_indexing_task.delay()\n(dataset_id, document_ids)
+activate CeleryTask
+
+note right of CeleryTask
+Asynchronous task queue: dataset
+Execute via Celery + Redis
+end note
+
+DocumentService --> Controller: Return documents, batch
+deactivate DocumentService
+
+Controller --> Frontend: Return document creation result\n{documents, batch}
+deactivate Controller
+
+Frontend --> User: Display import progress
+deactivate Frontend
+
+== 3. Asynchronous Indexing Task Execution ==
+CeleryTask -> Database: Query Dataset and Document
+Database --> CeleryTask: Return dataset, documents
+
+CeleryTask -> Database: Update Document status\n(indexing_status: parsing)
+CeleryTask -> IndexingRunner: run(documents)
+activate IndexingRunner
+
+== 4. Content Extraction Phase ==
+IndexingRunner -> IndexingRunner: _extract()
+IndexingRunner -> ExtractProcessor: extract(extract_setting)
+activate ExtractProcessor
+
+alt data_source_type == "notion_import"
+    ExtractProcessor -> Extractor: <<create>> NotionExtractor()
+    activate Extractor
+    
+    Extractor -> Extractor: _get_access_token()
+    note right
+    Get Notion access token:
+    1. Get from credential_id
+    2. Or use environment variable NOTION_INTEGRATION_TOKEN
+    end note
+    
+    Extractor -> ExternalAPI: Update last_edited_time\nGET /pages/{page_id}
+    activate ExternalAPI
+    ExternalAPI --> Extractor: Return page metadata
+    deactivate ExternalAPI
+    
+    alt notion_page_type == "page"
+        Extractor -> Extractor: _get_notion_block_data()
+        
+        loop Paginated page block retrieval
+            Extractor -> ExternalAPI: GET /blocks/{block_id}/children
+            activate ExternalAPI
+            ExternalAPI --> Extractor: Return blocks data
+            deactivate ExternalAPI
+            
+            Extractor -> Extractor: Parse block content\n(rich_text, table, etc.)
+        end
+        
+    else notion_page_type == "database"
+        Extractor -> Extractor: _get_notion_database_data()
+        
+        loop Paginated database query
+            Extractor -> ExternalAPI: POST /databases/{id}/query
+            activate ExternalAPI
+            ExternalAPI --> Extractor: Return database rows
+            deactivate ExternalAPI
+            
+            Extractor -> Extractor: Parse properties\n(multi_select, rich_text, etc.)
+        end
+    end
+    
+    Extractor --> ExtractProcessor: Return Document list
+    deactivate Extractor
+
+else data_source_type == "website_crawl"
+    
+    alt provider == "firecrawl"
+        ExtractProcessor -> Extractor: <<create>> FirecrawlWebExtractor()
+    else provider == "jinareader"
+        ExtractProcessor -> Extractor: <<create>> JinaReaderWebExtractor()
+    else provider == "watercrawl"
+        ExtractProcessor -> Extractor: <<create>> WaterCrawlWebExtractor()
+    end
+    
+    activate Extractor
+    
+    Extractor -> Extractor: WebsiteService.get_crawl_url_data()
+    
+    alt mode == "crawl"
+        Extractor -> Redis: Check cached crawl results
+        
+        alt Cache exists
+            Redis --> Extractor: Return cached data
+        else Cache not exists
+            Extractor -> ExternalAPI: Request crawl API for results
+            activate ExternalAPI
+            
+            alt Firecrawl
+                ExternalAPI -> ExternalAPI: FirecrawlApp.check_crawl_status()
+            else Jina Reader
+                ExternalAPI -> ExternalAPI: httpx.get(r.jina.ai/{url})
+            else WaterCrawl
+                ExternalAPI -> ExternalAPI: WaterCrawlProvider.get_crawl_url_data()
+            end
+            
+            ExternalAPI --> Extractor: Return markdown content
+            deactivate ExternalAPI
+        end
+        
+    else mode == "scrape"
+        Extractor -> ExternalAPI: WebsiteService.get_scrape_url_data()
+        activate ExternalAPI
+        ExternalAPI --> Extractor: Return scraped page content
+        deactivate ExternalAPI
+    end
+    
+    Extractor -> Extractor: Build Document object\n(page_content: markdown)
+    
+    note right of Extractor
+    Document metadata contains:
+    - source_url: source URL
+    - title: page title
+    - description: page description
+    end note
+    
+    Extractor --> ExtractProcessor: Return Document list
+    deactivate Extractor
+end
+
+ExtractProcessor --> IndexingRunner: Return text_docs
+deactivate ExtractProcessor
+
+IndexingRunner -> Database: Update Document status\n(indexing_status: splitting)
+
+== 5. Text Segmentation Phase ==
+IndexingRunner -> IndexingRunner: _transform()
+note right
+Process according to process_rule:
+- Text cleaning
+- Text segmentation (by character/token)
+- Generate DocumentSegment
+end note
+
+IndexingRunner -> IndexingRunner: _load_segments()
+IndexingRunner -> Database: Batch save DocumentSegment
+
+== 6. Vector Indexing Phase ==
+IndexingRunner -> IndexingRunner: _load()
+note right
+- Generate text embedding vectors
+- Store in vector database
+- Update Document status
+end note
+
+IndexingRunner -> Database: Update Document status\n(indexing_status: completed)
+IndexingRunner --> CeleryTask: Indexing completed
+deactivate IndexingRunner
+
+CeleryTask -> Database: Record completion time
+deactivate CeleryTask
+
+== 7. User Query Index Status ==
+User -> Frontend: Query document status
+activate Frontend
+Frontend -> Controller: GET /datasets/{id}/documents/{batch}/indexing-status
+activate Controller
+Controller -> Database: Query Document status
+Database --> Controller: Return indexing_status
+Controller --> Frontend: Return status information
+deactivate Controller
+Frontend --> User: Display processing completed
+deactivate Frontend
+
+@enduml

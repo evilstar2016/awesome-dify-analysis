@@ -1,0 +1,114 @@
+@startuml AccountPermission_Login
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title Dify Account Permission Management Core Flow - 1. Account Login and Authentication
+
+participant User as "User\n(Browser)"
+participant API as "Login API\n(/login)"
+participant AuthService as "AccountService\n(Authentication Service)"
+participant Database as "Database\n(PostgreSQL)"
+participant Redis as "Cache\n(Redis)"
+participant PassportService as "PassportService\n(Token Signing)"
+
+autonumber
+
+User ->> API: POST /login\n{email, password}
+activate API
+
+API ->> AuthService: authenticate(email, password)
+activate AuthService
+
+AuthService ->> Database: SELECT * FROM accounts\nWHERE email = ?
+activate Database
+Database -->> AuthService: Account record
+deactivate Database
+
+note over AuthService
+  Check account status
+  - Not exist → Password error
+  - Disabled → Throw exception
+end note
+
+AuthService ->> AuthService: compare_password(\npassword, account.password,\naccount.password_salt)
+
+alt Password incorrect
+  AuthService -->> API: AccountPasswordError
+  API -->> User: {"error": "Invalid email or password"}
+else Password correct
+  note over AuthService
+    If invitation link login and account has no password:
+    Set password and password salt
+  end note
+  
+  AuthService ->> AuthService: validate password matches
+  
+  alt Account status is PENDING
+    AuthService ->> AuthService: account.status = ACTIVE
+    AuthService ->> AuthService: account.initialized_at = now()
+  end
+  
+  AuthService ->> Database: db.session.commit()
+  activate Database
+  Database -->> AuthService: Account update completed
+  deactivate Database
+  
+  AuthService -->> API: Account object
+  deactivate AuthService
+  
+  API ->> AuthService: login(account, ip_address)
+  activate AuthService
+  
+  AuthService ->> Database: UPDATE accounts\nSET last_login_at, last_login_ip
+  activate Database
+  Database -->> AuthService: success
+  deactivate Database
+  
+  note over AuthService
+    Check account status
+    PENDING → ACTIVE
+  end note
+  
+  AuthService ->> PassportService: get_account_jwt_token(account)
+  activate PassportService
+  PassportService -->> AuthService: JWT access_token\n(contains: account_id, tenant_id, role)
+  deactivate PassportService
+  
+  AuthService ->> AuthService: refresh_token = _generate_refresh_token()\n(32 byte random value)
+  
+  AuthService ->> AuthService: csrf_token = generate_csrf_token(account_id)
+  
+  AuthService ->> Redis: SET refresh_token:{hash}\naccount_id EX 30d
+  activate Redis
+  Redis -->> AuthService: OK
+  deactivate Redis
+  
+  AuthService -->> API: TokenPair {\n  access_token,\n  refresh_token,\n  csrf_token\n}
+  deactivate AuthService
+  
+  API ->> API: Set Cookie\n- access_token (HttpOnly, Secure)\n- refresh_token (HttpOnly, Secure)\n- csrf_token
+  
+  API -->> User: {result: "success"}\n+ Set-Cookie headers
+  
+end
+
+deactivate API
+
+note over User, Redis
+  Client is now authenticated, can:
+  1. Use access_token for API calls
+  2. Use refresh_token to refresh when access_token expires
+  3. All state change requests need CSRF token verification
+end note
+
+@enduml

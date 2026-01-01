@@ -1,0 +1,104 @@
+@startuml dify_workflow_api_sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding      6
+skinparam ParticipantPadding    30
+
+title Dify Workflow API Call Flow
+
+actor "Client" as client
+participant "API Gateway\n/v1/workflows/run" as api
+participant "validate_app_token\ndecorator" as auth
+participant "WorkflowRunApi\nResource" as workflow
+participant "AppGenerateService" as service
+participant "WorkflowEntry" as engine
+participant "GraphEngineManager" as graph
+database "PostgreSQL" as db
+participant "LLM Provider" as llm
+
+== Authentication Phase ==
+
+client -> api: POST /v1/workflows/run\n(Authorization: Bearer {token})
+api -> auth: Validate request
+auth -> db: Validate ApiToken
+db --> auth: token & app_model
+auth -> db: Create/Update EndUser
+auth --> workflow: Inject dependencies
+
+== Validation Phase ==
+
+workflow -> workflow: Validate app_mode == WORKFLOW
+
+alt Not a workflow app
+    workflow --> client: 400 NotWorkflowAppError
+end
+
+workflow -> workflow: Parse parameters\n(inputs, files, response_mode)
+
+== Execution Phase ==
+
+workflow -> service: generate(app_model, user, args, streaming)
+
+service -> db: Get Workflow definition
+db --> service: workflow_graph
+
+service -> engine: Initialize workflow engine
+engine -> db: Create WorkflowRun record
+db --> engine: workflow_run_id
+
+loop Traverse workflow nodes
+    engine -> engine: Execute current node
+    engine -> db: Record WorkflowNodeExecution
+    
+    alt Requires LLM call
+        engine -> llm: Call model
+        llm --> engine: Model response
+    end
+    
+    alt Streaming mode
+        engine --> client: SSE: node_started
+        engine --> client: SSE: node_finished
+    end
+end
+
+== Completion Phase ==
+
+engine -> db: Update WorkflowRun status
+db --> engine: Update successful
+
+alt Blocking mode
+    engine --> service: Complete result
+    service --> workflow: response
+    workflow --> client: JSON response
+else Streaming mode
+    engine --> client: SSE: workflow_finished
+    engine --> client: SSE: [DONE]
+end
+
+== Get Run Details ==
+
+client -> api: GET /v1/workflows/run/{run_id}
+api -> auth: Validate request
+auth --> workflow: Validation passed
+workflow -> db: Query WorkflowRun
+db --> workflow: Run record
+workflow --> client: Run details JSON
+
+== Stop Workflow ==
+
+client -> api: POST /v1/workflows/tasks/{task_id}/stop
+api -> auth: Validate request
+auth --> workflow: Validation passed
+workflow -> graph: send_stop_command(task_id)
+graph --> workflow: Command sent successfully
+workflow --> client: {"result": "success"}
+
+@enduml

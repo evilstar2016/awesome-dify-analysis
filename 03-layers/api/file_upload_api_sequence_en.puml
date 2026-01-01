@@ -1,0 +1,93 @@
+@startuml dify_file_upload_api_sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding      6
+skinparam ParticipantPadding    30
+
+title Dify File Upload API Call Flow
+
+actor "Client" as client
+participant "API Gateway\n/v1/files/upload" as api
+participant "validate_app_token\ndecorator" as auth
+participant "FileApi\nResource" as resource
+participant "FileService" as service
+database "PostgreSQL" as db
+participant "Storage\n(S3/Local)" as storage
+
+== Authentication Phase ==
+
+client -> api: POST /v1/files/upload\n(multipart/form-data)
+api -> auth: Validate request
+auth -> db: Validate ApiToken
+db --> auth: token & app_model
+
+auth -> db: Create/Get EndUser
+db --> auth: end_user
+auth --> resource: Inject dependencies
+
+== File Validation ==
+
+resource -> resource: Check if file is included in request
+
+alt No file uploaded
+    resource --> client: 400 NoFileUploadedError
+end
+
+alt Multiple files uploaded
+    resource --> client: 400 TooManyFilesError
+end
+
+resource -> resource: Validate filename
+alt Filename does not exist
+    resource --> client: 400 FilenameNotExistsError
+end
+
+resource -> resource: Validate MIME type
+alt Unsupported file type
+    resource --> client: 415 UnsupportedFileTypeError
+end
+
+== File Upload Processing ==
+
+resource -> service: upload_file(\n  filename, content,\n  mimetype, user)
+
+service -> service: Validate file size
+alt File too large
+    service --> resource: FileTooLargeError
+    resource --> client: 413 FileTooLargeError
+end
+
+service -> service: Generate unique filename
+service -> service: Calculate file hash
+
+service -> storage: Upload file to storage
+storage --> service: Storage path
+
+service -> db: Create UploadFile record
+db --> service: upload_file
+
+service --> resource: upload_file object
+
+== Return Response ==
+
+resource --> client: 201 Created\n{\n  "id": "file_id",\n  "name": "filename.pdf",\n  "size": 1024,\n  "extension": "pdf",\n  "mime_type": "application/pdf",\n  "created_at": 1234567890\n}
+
+== File Used in Conversation ==
+
+client -> api: POST /v1/chat-messages\n{\n  "files": [{"id": "file_id"}],\n  "query": "Please analyze this file"\n}
+
+note over api
+  File will be parsed
+  and provided to LLM
+  during conversation processing
+end note
+
+@enduml

@@ -1,0 +1,297 @@
+@startuml AccountPermission_Architecture
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam classBackgroundColor #E8F4F8
+skinparam classBorderColor #1976D2
+skinparam arrowColor #1976D2
+skinparam defaultFontColor #333333
+
+title Dify Account Permission Management System Architecture
+
+package "Model Layer" #F5F5F5 {
+  class Account {
+    --
+    id: UUID
+    name: str
+    email: str (unique)
+    password: str (hashed)
+    password_salt: str
+    status: AccountStatus
+    interface_language: str
+    interface_theme: str
+    timezone: str
+    last_login_at: datetime
+    last_login_ip: str
+    created_at: datetime
+    updated_at: datetime
+    --
+    current_tenant: Tenant
+    role: TenantAccountRole
+    --
+    is_admin_or_owner: bool
+    has_edit_permission: bool
+    is_dataset_editor: bool
+  }
+  
+  enum TenantAccountRole {
+    OWNER
+    ADMIN
+    EDITOR
+    NORMAL
+    DATASET_OPERATOR
+  }
+  
+  enum AccountStatus {
+    PENDING
+    UNINITIALIZED
+    ACTIVE
+    BANNED
+    CLOSED
+  }
+  
+  class Tenant {
+    --
+    id: UUID
+    name: str
+    encrypt_public_key: str
+    plan: str
+    status: TenantStatus
+    custom_config: JSON
+    created_at: datetime
+    updated_at: datetime
+    --
+    get_accounts(): List[Account]
+  }
+  
+  enum TenantStatus {
+    NORMAL
+    ARCHIVE
+  }
+  
+  class TenantAccountJoin {
+    --
+    id: UUID
+    tenant_id: UUID
+    account_id: UUID
+    current: bool
+    role: str
+    invited_by: UUID
+    created_at: datetime
+    updated_at: datetime
+    --
+    Unique: (tenant_id, account_id)
+  }
+  
+  class AccountIntegrate {
+    --
+    id: UUID
+    account_id: UUID
+    provider: str (oauth provider)
+    open_id: str
+    encrypted_token: str
+    created_at: datetime
+    updated_at: datetime
+    --
+    Unique: (account_id, provider)
+    Unique: (provider, open_id)
+  }
+  
+  class InvitationCode {
+    --
+    id: int
+    batch: str
+    code: str (32 chars)
+    status: str
+    used_at: datetime
+    used_by_tenant_id: UUID
+    used_by_account_id: UUID
+    created_at: datetime
+  }
+}
+
+package "Service Layer" #F0F8FF {
+  class AccountService {
+    --
+    .. Token Management ..
+    get_account_jwt_token(account): str
+    refresh_token(refresh_token): TokenPair
+    login(account, ip): TokenPair
+    logout(account): void
+    --
+    .. Authentication ..
+    authenticate(email, password): Account
+    update_account_password(account, old, new): Account
+    --
+    .. Account Management ..
+    create_account(email, name, ...): Account
+    create_account_and_tenant(email, ...): Account
+    update_account(account, **kwargs): Account
+    update_account_email(account, email): Account
+    --
+    .. Password Reset ..
+    send_reset_password_email(account, email, ...): void
+    verify_reset_password_code(token, code): bool
+    --
+    .. Ownership Transfer ..
+    send_owner_transfer_email(account, ...): token
+    get_owner_transfer_data(token): dict
+    revoke_owner_transfer_token(token): void
+    --
+    .. OAuth Integration ..
+    link_account_integrate(provider, open_id, account): void
+    --
+    .. Rate Limiting ..
+    is_login_error_rate_limit(email): bool
+    is_email_send_ip_limit(ip): bool
+    is_owner_transfer_error_rate_limit(email): bool
+  }
+  
+  class TenantService {
+    --
+    .. Workspace Management ..
+    create_tenant(name): Tenant
+    create_owner_tenant_if_not_exist(account): void
+    get_join_tenants(account): List[Tenant]
+    switch_tenant(account, tenant_id): void
+    --
+    .. Member Management ..
+    create_tenant_member(tenant, account, role): TenantAccountJoin
+    get_tenant_members(tenant): List[Account]
+    get_dataset_operator_members(tenant): List[Account]
+    update_member_role(tenant, member, role, operator): void
+    remove_member_from_tenant(tenant, account, operator): void
+    --
+    .. Permission Check ..
+    check_member_permission(tenant, operator, member, action): void
+    is_owner(account, tenant): bool
+    is_member(account, tenant): bool
+    get_user_role(account, tenant): TenantAccountRole
+    has_roles(tenant, roles): bool
+  }
+  
+  class RegisterService {
+    --
+    .. Invitation Management ..
+    invite_new_member(tenant, email, ..., role, inviter): token
+    get_invitation_if_token_valid(tenant, email, token): dict
+    --
+    .. Token Verification ..
+    verify_invitation_token(token): bool
+  }
+  
+  class PassportService {
+    --
+    .. JWT Signing ..
+    issue(payload): str
+    verify(token): payload
+  }
+}
+
+package "Controller Layer" #FFF5E6 {
+  class AuthController {
+    --
+    /login - POST
+    /logout - POST
+    /register - POST
+    /reset-password - POST
+    /activate - POST (invitation activation)
+  }
+  
+  class MemberController {
+    --
+    /workspaces/current/members - GET
+    /workspaces/current/members/invite-email - POST
+    /workspaces/current/members/<id> - DELETE
+    /workspaces/current/members/<id>/update-role - PUT
+    /workspaces/current/dataset-operators - GET
+  }
+  
+  class OwnerTransferController {
+    --
+    /members/send-owner-transfer-confirm-email - POST
+    /members/owner-transfer-check - POST
+    /members/<id>/owner-transfer - POST
+  }
+}
+
+package "Authentication & Authorization" #F0FFF0 {
+  class TokenManager {
+    --
+    generate_token(account, token_type, data): token
+    get_token_data(token, token_type): dict
+  }
+  
+  class PermissionValidator {
+    --
+    check_role(required_roles): bool
+    check_action(tenant, operator, action): bool
+  }
+  
+  class PasswordManager {
+    --
+    hash_password(password, salt): str
+    compare_password(password, hashed, salt): bool
+    valid_password(password): void
+  }
+}
+
+package "External Systems" #FFE6F0 {
+  class EmailService {
+    --
+    send_invitation_email(email, token, ...)
+    send_reset_password_email(email, token, ...)
+    send_owner_transfer_email(email, code, ...)
+  }
+  
+  class PostgreSQL {
+    {database}
+    --
+    accounts
+    tenants
+    tenant_account_joins
+    account_integrates
+    invitation_codes
+  }
+  
+  class Redis {
+    {database}
+    --
+    refresh_token:{hash}
+    owner_transfer_token:{hash}
+    invitation_token:{hash}
+    rate_limit:*
+  }
+}
+
+'' Relationship definitions
+Account "*" -- "1" Tenant: has current_tenant
+Account "1" -- "*" TenantAccountJoin: belongs_to
+Tenant "1" -- "*" TenantAccountJoin: has_members
+TenantAccountJoin -- TenantAccountRole: contains
+Account -- AccountStatus: has_status
+Account "1" -- "*" AccountIntegrate: has_oauth_providers
+InvitationCode -- Account: used_by
+InvitationCode -- Tenant: used_in_tenant
+
+AccountService -- Account: manages
+AccountService -- TokenManager: uses
+AccountService -- PasswordManager: uses
+TenantService -- Tenant: manages
+TenantService -- TenantAccountJoin: manages
+TenantService -- PermissionValidator: uses
+RegisterService -- InvitationCode: manages
+RegisterService -- EmailService: sends
+
+AuthController -- AccountService: uses
+MemberController -- TenantService: uses
+MemberController -- PermissionValidator: uses
+OwnerTransferController -- AccountService: uses
+
+PassportService -- PostgreSQL: reads
+AccountService -- PostgreSQL: reads/writes
+AccountService -- Redis: reads/writes
+TenantService -- PostgreSQL: reads/writes
+RegisterService -- Redis: reads/writes
+RegisterService -- EmailService: uses
+
+@enduml

@@ -1,0 +1,91 @@
+@startuml dify_audio_api_sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding      6
+skinparam ParticipantPadding    30
+
+title Dify Audio API Call Flow
+
+actor "Client" as client
+participant "API Gateway" as api
+participant "validate_app_token\ndecorator" as auth
+participant "AudioApi\nTextApi" as resource
+participant "AudioService" as service
+database "PostgreSQL" as db
+participant "Speech Provider\n(Whisper/Azure)" as speech
+
+== Speech to Text (ASR) ==
+
+client -> api: POST /v1/audio-to-text\n(multipart/form-data: file)
+api -> auth: Validate request
+auth -> db: Validate ApiToken
+db --> auth: app_model, end_user
+auth --> resource: Inject dependencies
+
+resource -> service: transcript_asr(\n  app_model, file, end_user)
+
+service -> service: Validate audio file
+alt No audio uploaded
+    service --> resource: NoAudioUploadedServiceError
+    resource --> client: 400 NoAudioUploadedError
+end
+
+alt Audio too large
+    service --> resource: AudioTooLargeServiceError
+    resource --> client: 413 AudioTooLargeError
+end
+
+alt Unsupported audio format
+    service --> resource: UnsupportedAudioTypeServiceError
+    resource --> client: 415 UnsupportedAudioTypeError
+end
+
+service -> db: Get App configured speech model
+db --> service: speech_config
+
+alt Speech model not configured
+    service --> resource: ProviderNotSupportSpeechToTextServiceError
+    resource --> client: 400 ProviderNotSupportSpeechToTextError
+end
+
+service -> speech: Call ASR model
+speech --> service: Transcribed text
+
+service --> resource: {"text": "Transcription result"}
+resource --> client: 200 OK\n{"text": "Transcription result"}
+
+== Text to Speech (TTS) ==
+
+client -> api: POST /v1/text-to-audio\n{"text": "Text to convert", "voice": "alloy"}
+api -> auth: Validate request
+auth --> resource: Validation passed
+
+resource -> resource: Parse parameters\n(message_id, text, voice, streaming)
+
+resource -> service: transcript_tts(\n  app_model, text, voice, end_user, message_id)
+
+service -> db: Get App configured TTS model
+db --> service: tts_config
+
+alt Streaming mode
+    service -> speech: Streaming TTS call
+    loop Receive audio chunks
+        speech --> service: audio_chunk
+        service --> client: Audio stream data
+    end
+else Non-streaming mode
+    service -> speech: TTS call
+    speech --> service: Complete audio
+    service --> resource: Audio data
+    resource --> client: 200 OK\n(audio/mpeg)
+end
+
+@enduml

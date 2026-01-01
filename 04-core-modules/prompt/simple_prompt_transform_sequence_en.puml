@@ -1,0 +1,129 @@
+@startuml SimplePromptTransform_Sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding      6
+skinparam ParticipantPadding    30
+
+title SimplePromptTransform Core Process Sequence Diagram
+
+actor "Application" as App
+participant "BaseAppRunner" as Runner
+participant "SimplePromptTransform" as Simple
+participant "PromptTemplateParser" as Parser
+participant "TokenBufferMemory" as Memory
+participant "ModelInstance" as Model
+
+== 1. Initialization Phase ==
+
+App -> Runner: organize_prompt_messages()
+activate Runner
+
+Runner -> Runner: Determine prompt_type
+note right: SIMPLE or ADVANCED
+
+alt prompt_type == SIMPLE
+    Runner -> Simple: new SimplePromptTransform()
+    activate Simple
+
+    Runner -> Simple: get_prompt(app_mode, prompt_template_entity, inputs, query, files, context, memory, model_config)
+
+    == 2. Mode Determination ==
+
+    Simple -> Simple: Get model_mode (CHAT/COMPLETION)
+
+    alt model_mode == CHAT
+        Simple -> Simple: _get_chat_model_prompt_messages()
+    else model_mode == COMPLETION
+        Simple -> Simple: _get_completion_model_prompt_messages()
+    end
+
+    == 3. Load Prompt Rules ==
+
+    Simple -> Simple: _get_prompt_rule(app_mode, provider, model)
+    Simple -> Simple: Load JSON template file
+    note right
+        common_chat.json or
+        common_completion.json or
+        baichuan_chat.json etc
+    end note
+
+    == 4. Build Prompt Template ==
+
+    Simple -> Simple: get_prompt_template()
+
+    Simple -> Parser: new PromptTemplateParser(template)
+    activate Parser
+    Parser -> Parser: extract() extract variables
+    Parser --> Simple: parser instance
+    deactivate Parser
+
+    == 5. Variable Replacement ==
+
+    Simple -> Simple: _get_prompt_str_and_rules()
+
+    Simple -> Parser: format(variables)
+    activate Parser
+    note right
+        Replace variables:
+        - User input variables
+        - #context#
+        - #query#
+        - #histories#
+    end note
+    Parser --> Simple: formatted_prompt
+    deactivate Parser
+
+    == 6. Build Message List ==
+
+    Simple -> Simple: Create SystemPromptMessage(prompt)
+
+    alt Has Memory
+        == 7. Append History Messages ==
+
+        Simple -> Simple: _append_chat_histories()
+
+        Simple -> Simple: _calculate_rest_token()
+        Simple -> Model: get_llm_num_tokens(prompt_messages)
+        activate Model
+        Model --> Simple: current_tokens
+        deactivate Model
+
+        Simple -> Simple: rest_tokens = context_size - max_tokens - current_tokens
+
+        Simple -> Memory: get_history_prompt_messages(max_token_limit, message_limit)
+        activate Memory
+        Memory -> Memory: extract_thread_messages()
+        Memory --> Simple: history_messages
+        deactivate Memory
+
+        Simple -> Simple: prompt_messages.extend(histories)
+    end
+
+    == 8. Add User Message ==
+
+    Simple -> Simple: _get_last_user_message(query, files)
+
+    alt Has files
+        Simple -> Simple: Build PromptMessageContents
+        Simple -> Simple: UserPromptMessage(content=contents)
+    else No files
+        Simple -> Simple: UserPromptMessage(content=query)
+    end
+
+    Simple --> Runner: (prompt_messages, stops)
+    deactivate Simple
+
+end
+
+Runner --> App: (prompt_messages, stops)
+deactivate Runner
+
+@enduml

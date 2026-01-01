@@ -1,0 +1,138 @@
+@startuml dify_api_architecture
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam componentBorderColor #1976D2
+skinparam packageBorderColor #6C757D
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+
+title Dify API Architecture Overview
+
+package "API Layer" {
+    [Service API\n/v1/] as service_api
+    [Console API\n/console/api/] as console_api
+    [Web API\n/api/] as web_api
+}
+
+package "Controllers" {
+    package "service_api" {
+        [completion.py] as completion
+        [conversation.py] as conversation
+        [workflow.py] as workflow_ctrl
+        [message.py] as message
+        [audio.py] as audio
+        [file.py] as file_ctrl
+    }
+    
+    package "dataset" {
+        [dataset.py] as dataset_ctrl
+        [document.py] as document_ctrl
+        [segment.py] as segment_ctrl
+        [hit_testing.py] as hit_testing
+    }
+}
+
+package "Authentication" {
+    [validate_app_token] as app_auth
+    [validate_dataset_token] as dataset_auth
+    [login_required] as login_auth
+}
+
+package "Services Layer" {
+    [AppGenerateService] as app_gen_svc
+    [ConversationService] as conv_svc
+    [MessageService] as msg_svc
+    [WorkflowAppService] as wf_svc
+    [DatasetService] as dataset_svc
+    [DocumentService] as doc_svc
+    [SegmentService] as seg_svc
+    [AudioService] as audio_svc
+    [FileService] as file_svc
+}
+
+package "Core Layer" {
+    [WorkflowEntry] as wf_entry
+    [AppQueueManager] as queue_mgr
+    [GraphEngineManager] as graph_mgr
+    [ModelManager] as model_mgr
+}
+
+package "Data Layer" {
+    database "PostgreSQL" as postgres
+    database "Redis" as redis
+    database "Vector Store" as vector
+}
+
+package "External" {
+    cloud "LLM Providers" as llm
+    queue "Celery Workers" as celery
+}
+
+' API Layer connections
+service_api --> completion
+service_api --> conversation
+service_api --> workflow_ctrl
+service_api --> message
+service_api --> audio
+service_api --> file_ctrl
+service_api --> dataset_ctrl
+service_api --> document_ctrl
+service_api --> segment_ctrl
+service_api --> hit_testing
+
+' Auth connections
+completion --> app_auth
+conversation --> app_auth
+workflow_ctrl --> app_auth
+message --> app_auth
+dataset_ctrl --> dataset_auth
+document_ctrl --> dataset_auth
+segment_ctrl --> dataset_auth
+
+' Controller to Service connections
+completion --> app_gen_svc
+conversation --> conv_svc
+workflow_ctrl --> app_gen_svc
+workflow_ctrl --> wf_svc
+message --> msg_svc
+audio --> audio_svc
+file_ctrl --> file_svc
+dataset_ctrl --> dataset_svc
+document_ctrl --> doc_svc
+segment_ctrl --> seg_svc
+hit_testing --> dataset_svc
+
+' Service to Core connections
+app_gen_svc --> wf_entry
+app_gen_svc --> queue_mgr
+wf_svc --> graph_mgr
+dataset_svc --> model_mgr
+
+' Core to Data connections
+wf_entry --> postgres
+queue_mgr --> redis
+graph_mgr --> redis
+model_mgr --> postgres
+dataset_svc --> vector
+
+' Core to External connections
+wf_entry --> llm
+model_mgr --> llm
+doc_svc --> celery
+
+note right of service_api
+  Bearer Token Authentication
+  For third-party integration
+end note
+
+note right of console_api
+  Session/JWT Authentication
+  For management console
+end note
+
+note right of web_api
+  Passport Token Authentication
+  For Web applications
+end note
+
+@enduml

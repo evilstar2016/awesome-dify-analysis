@@ -1,0 +1,348 @@
+@startuml Dify Knowledge Q&A Scenario - Context Engineering Application Flow
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title **Dify Knowledge Q&A Scenario - Context Engineering Application Flow**
+
+actor "User" as User
+participant "Frontend\nPromptEditor" as Frontend #LightBlue
+participant "Backend API\nAdvancedChatAppGenerator" as API #LightGreen
+participant "Knowledge Retrieval Node\nKnowledgeRetrievalNode" as KnowledgeNode #LightCoral
+participant "Vector Retrieval\nDatasetRetrieval" as Retrieval #LightSalmon
+participant "Vector Database\nVectorDB" as VectorDB #LightYellow
+participant "Prompt Transformer\nAdvancedPromptTransform" as PromptTransform #LightPink
+participant "LLM Node\nLLMNode" as LLM #Lavender
+
+== **Phase 1: User Input and Context Variable Preparation** ==
+
+User -> Frontend: Input question\n"Introduce Dify's RAG functionality"
+note right of Frontend
+  User in visual editor:
+  1. Input query text
+  2. Can insert {{#context#}} placeholder
+  3. Can insert {{#histories#}} conversation history
+  4. Can insert custom variables
+end note
+
+Frontend -> API: POST /chat-messages\n{query, conversation_id, inputs}
+activate API
+
+API -> API: Initialize ApplicationGenerateEntity
+note right
+  Create application generation entity:
+  • task_id
+  • query (user question)
+  • conversation_id
+  • inputs (input variables)
+  • files (file list)
+end note
+
+API -> API: Start Workflow Runner
+note right
+  Workflow executor creation:
+  • GraphRuntimeState (runtime state)
+  • VariablePool (variable pool)
+  • SystemVariables (system variables)
+end note
+
+== **Phase 2: Knowledge Base Retrieval - Context Construction** ==
+
+API -> KnowledgeNode: execute(query)
+activate KnowledgeNode
+note right of KnowledgeNode
+  **Context Engineering Key Step 1**
+  Extract retrieval requirements from user question
+end note
+
+KnowledgeNode -> KnowledgeNode: Extract query variables\nfrom VariablePool
+note right
+  Variable pool contains:
+  • sys.query (user original question)
+  • sys.conversation_id
+  • sys.user_id
+  • Custom input variables
+end note
+
+KnowledgeNode -> Retrieval: retrieve(\nquery="Introduce Dify's RAG functionality",\ndataset_ids=[...],\ntop_k=4,\nrerank=true\n)
+activate Retrieval
+
+Retrieval -> Retrieval: Metadata filtering (optional)
+note right
+  **Context Engineering Optimization 1: Metadata Filtering**
+
+  Supports three modes:
+  1. disabled - no filtering
+  2. automatic - LLM automatically extracts filter conditions
+  3. manual - manually configured filter rules
+
+  Example: automatic extraction
+  Query: "2023 product documentation"
+  → metadata_filters: {
+      "year": 2023,
+      "type": "product_doc"
+    }
+end note
+
+alt Enable metadata automatic filtering
+    Retrieval -> LLM: invoke(\nprompt="Extract metadata from query",\nquery=query,\nmetadata_fields=[...]
+    LLM --> Retrieval: Return filter conditions\n{"metadata_map": [...]}
+end
+
+Retrieval -> VectorDB: Vector retrieval
+note right
+  **Retrieval Strategies:**
+
+  1. **Single mode (multi-dataset routing)**
+     • Use LLM to select most relevant dataset
+     • Function Calling or ReAct routing
+
+  2. **Multiple mode (multi-dataset merging)**
+     • Parallel retrieval from multiple datasets
+     • Support hybrid retrieval (vector + keyword)
+     • Weighted merging (vector_weight + keyword_weight)
+end note
+
+VectorDB --> Retrieval: Return candidate document list\n[doc1, doc2, doc3, ...]
+note left
+  Each document contains:
+  • content (content)
+  • score (relevance score)
+  • metadata (metadata)
+  • dataset_id
+  • document_id
+end note
+
+alt Enable Reranking
+    Retrieval -> Retrieval: Rerank (Rerank Model)
+    note right
+      **Context Engineering Optimization 2: Reranking**
+
+      Use specialized reranking models:
+      • Cohere Rerank
+      • Jina Rerank
+      • Local BGE Reranker
+
+      Improve relevance ranking quality
+    end note
+end
+
+Retrieval -> Retrieval: Sort by score & Top-K filtering
+note right
+  **Context Engineering Optimization 3: Quality Control**
+
+  • score_threshold: 0.7 (example)
+  • top_k: 4
+  • Only retain high-quality documents
+end note
+
+Retrieval --> KnowledgeNode: Return formatted results
+deactivate Retrieval
+
+note right of KnowledgeNode
+  **Constructed context string:**
+
+  question: What is RAG?
+  answer: RAG is Retrieval-Augmented Generation...
+
+  question: Which vector databases does Dify support?
+  answer: Supports Weaviate, Qdrant...
+
+  Dify's RAG system has the following features:
+  1. Multiple retrieval strategies
+  2. Support reranking
+  3. Metadata filtering
+  ...
+end note
+
+KnowledgeNode --> API: Output context\noutputs: {\n  result: [retrieval result array]\n}
+deactivate KnowledgeNode
+
+== **Phase 3: Prompt Assembly - Context Injection** ==
+
+API -> LLM: execute(prompt_template, context)
+activate LLM
+
+LLM -> PromptTransform: get_prompt(\nprompt_template,\ninputs,\nquery,\ncontext,\nmemory\n)
+activate PromptTransform
+
+note right of PromptTransform
+  **Context Engineering Key Step 2**
+
+  Prompt template example:
+  ```
+  You are a professional AI assistant.
+
+  Background knowledge:
+  {{#context#}}
+
+  Conversation history:
+  {{#histories#}}
+
+  User question:
+  {{#query#}}
+
+  Please answer the user's question based on background knowledge.
+  ```
+end note
+
+PromptTransform -> PromptTransform: Parse template variables
+note right
+  **PromptTemplateParser**
+
+  Recognized special variables:
+  • {{#context#}} - Knowledge base context
+  • {{#histories#}} - Conversation history
+  • {{#query#}} - User query
+  • {{custom variables}} - Input variables
+end note
+
+PromptTransform -> PromptTransform: _set_context_variable()
+note right
+  **Context variable injection:**
+
+  ```python
+  if '#context#' in parser.variable_keys:
+      if context:
+          prompt_inputs['#context#'] = context
+      else:
+          prompt_inputs['#context#'] = ""
+  ```
+
+  Inject retrieval result string into template
+end note
+
+alt Conversation history exists
+    PromptTransform -> PromptTransform: _set_histories_variable()
+    note right
+      **Context Engineering Optimization 4: Conversation History Management**
+
+      Get history from TokenBufferMemory:
+      • Limit token count (max_token_limit)
+      • Limit message count (message_limit)
+      • Keep recent N conversation rounds
+
+      Format as:
+      Human: Previous question 1
+      Assistant: Previous answer 1
+      Human: Previous question 2
+      Assistant: Previous answer 2
+    end note
+end
+
+PromptTransform -> PromptTransform: _set_query_variable()
+note right
+  Inject current user question
+end note
+
+PromptTransform -> PromptTransform: parser.format(prompt_inputs)
+note right
+  **Final assembled Prompt:**
+
+  You are a professional AI assistant.
+
+  Background knowledge:
+  question: What is RAG?
+  answer: RAG is Retrieval-Augmented Generation...
+  question: Which vector databases does Dify support?
+  answer: Supports Weaviate, Qdrant...
+  Dify's RAG system has the following features:...
+
+  Conversation history:
+  Human: Previously asked question
+  Assistant: Previous answer
+
+  User question:
+  Introduce Dify's RAG functionality
+
+  Please answer the user's question based on background knowledge.
+end note
+
+PromptTransform --> LLM: Return PromptMessages
+deactivate PromptTransform
+
+== **Phase 4: LLM Generation and Streaming Output** ==
+
+LLM -> LLM: invoke_llm(\nprompt_messages,\nmodel_parameters,\nstop,\nstream=True\n)
+
+note right of LLM
+  **Context Engineering Optimization 5: Token Management**
+
+  1. Calculate remaining token capacity
+  2. Prioritize system prompt
+  3. Dynamically trim context and histories
+  4. Avoid exceeding model context window
+end note
+
+LLM -> LLM: Call OpenAI/Claude/etc API
+activate LLM #DarkGray
+
+loop Streaming generation
+    LLM --> API: yield text_chunk
+    API --> Frontend: SSE: {"event": "message",\n"answer": "Dify's RAG functionality..."}
+    Frontend --> User: Display answer in real-time
+end
+
+deactivate LLM
+
+LLM --> API: Generation completed\nusage: {total_tokens, ...}
+deactivate LLM
+
+== **Phase 5: Result Storage and Feedback** ==
+
+API -> API: Save message to database
+note right
+  Storage content:
+  • User question
+  • Retrieved context (metadata)
+  • LLM generated answer
+  • Token usage
+  • Conversation history record
+end note
+
+API -> API: Update Conversation
+note right
+  **Context Engineering Optimization 6: Continuous Learning**
+
+  Record retrieval quality metrics:
+  • Hit documents
+  • Relevance scores
+  • User feedback
+
+  Used for optimization:
+  • Adjust retrieval strategies
+  • Optimize embedding models
+  • Improve prompt templates
+end note
+
+API --> Frontend: Complete response
+deactivate API
+
+Frontend --> User: Display complete answer\n+ Citation source documents (optional)
+
+note over User, LLM
+  **Context Engineering Core Advantages Summary:**
+
+  1️⃣ **Dynamic Context Construction** - Real-time retrieval of relevant knowledge based on user questions
+  2️⃣ **Multi-level Filtering Optimization** - Metadata filtering → Vector retrieval → Reranking → Top-K
+  3️⃣ **Intelligent Prompt Assembly** - Template variables + Context injection + History management
+  4️⃣ **Smart Token Management** - Dynamic trimming, avoid exceeding context window
+  5️⃣ **Quality Tracking Feedback** - Record retrieval effectiveness, continuous optimization
+
+  **Effects:**
+  • Improve answer accuracy (based on knowledge base, not hallucination)
+  • Maintain conversation coherence (historical context)
+  • Traceability (citation sources)
+  • Efficient token usage (dynamic trimming)
+end note
+
+@enduml

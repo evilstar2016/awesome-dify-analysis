@@ -1,0 +1,711 @@
+@startuml Dify Data Architecture
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam linetype ortho
+skinparam roundcorner 5
+skinparam class {
+    BackgroundColor #F8F9FA
+    BorderColor #1976D2
+    ArrowColor #1976D2
+    FontColor #212529
+}
+skinparam package {
+    BackgroundColor #E3F2FD
+    BorderColor #1976D2
+    FontColor #1976D2
+}
+skinparam note {
+    BackgroundColor #FFF3E0
+    BorderColor #F57C00
+}
+
+title Dify Data Architecture Diagram
+
+' ========== Account & Tenant Domain ==========
+package "Account & Tenant Domain" #E3F2FD {
+    entity Account {
+        * id : UUID <<PK>>
+        --
+        name : String(255)
+        email : String(255) <<unique>>
+        password : String(255)
+        password_salt : String(255)
+        avatar : String(255)
+        interface_language : String(255)
+        interface_theme : String(255)
+        timezone : String(255)
+        last_login_at : DateTime
+        last_login_ip : String(255)
+        last_active_at : DateTime
+        status : AccountStatus
+        initialized_at : DateTime
+        created_at : DateTime
+        updated_at : DateTime
+    }
+
+    entity Tenant {
+        * id : UUID <<PK>>
+        --
+        name : String(255)
+        encrypt_public_key : Text
+        plan : String(255)
+        status : TenantStatus
+        custom_config : Text (JSON)
+        created_at : DateTime
+        updated_at : DateTime
+    }
+
+    entity TenantAccountJoin {
+        * id : UUID <<PK>>
+        --
+        tenant_id : UUID <<FK>>
+        account_id : UUID <<FK>>
+        current : Boolean
+        role : TenantAccountRole
+        invited_by : UUID <<FK>>
+        created_at : DateTime
+        updated_at : DateTime
+    }
+
+    entity AccountIntegrate {
+        * id : UUID <<PK>>
+        --
+        account_id : UUID <<FK>>
+        provider : String(255)
+        open_id : String(255)
+        encrypted_token : Text
+        created_at : DateTime
+        updated_at : DateTime
+    }
+}
+
+' ========== Application Domain ==========
+package "Application Domain" #E8F5E9 {
+    entity App {
+        * id : UUID <<PK>>
+        --
+        tenant_id : UUID <<FK>>
+        name : String(255)
+        description : Text
+        mode : AppMode
+        icon_type : IconType
+        icon : String(255)
+        icon_background : String(255)
+        app_model_config_id : UUID <<FK>>
+        workflow_id : UUID <<FK>>
+        status : String(255)
+        enable_site : Boolean
+        enable_api : Boolean
+        api_rpm : Integer
+        api_rph : Integer
+        is_demo : Boolean
+        is_public : Boolean
+        is_universal : Boolean
+        tracing : Text
+        max_active_requests : Integer
+        use_icon_as_answer_icon : Boolean
+        created_by : UUID <<FK>>
+        created_at : DateTime
+        updated_by : UUID
+        updated_at : DateTime
+    }
+
+    entity AppModelConfig {
+        * id : UUID <<PK>>
+        --
+        app_id : UUID <<FK>>
+        provider : String(255)
+        model_id : String(255)
+        configs : JSON
+        opening_statement : Text
+        suggested_questions : Text
+        suggested_questions_after_answer : Text
+        speech_to_text : Text
+        text_to_speech : Text
+        more_like_this : Text
+        model : Text
+        user_input_form : Text
+        dataset_query_variable : String(255)
+        pre_prompt : Text
+        agent_mode : Text (JSON)
+        sensitive_word_avoidance : Text
+        retriever_resource : Text
+        prompt_type : String(255)
+        chat_prompt_config : Text
+        completion_prompt_config : Text
+        dataset_configs : Text (JSON)
+        file_upload : Text (JSON)
+        created_by : UUID
+        created_at : DateTime
+        updated_by : UUID
+        updated_at : DateTime
+    }
+
+    entity Site {
+        * id : UUID <<PK>>
+        --
+        app_id : UUID <<FK>>
+        title : String(255)
+        icon : String(255)
+        icon_background : String(255)
+        description : Text
+        default_language : String(255)
+        copyright : String(255)
+        privacy_policy : String(255)
+        custom_disclaimer : Text
+        customize_domain : String(255)
+        customize_token_strategy : String(255)
+        prompt_public : Boolean
+        status : String(255)
+        created_at : DateTime
+        updated_at : DateTime
+    }
+
+    entity ApiToken {
+        * id : UUID <<PK>>
+        --
+        app_id : UUID <<FK>>
+        type : String(255)
+        token : String(255) <<unique>>
+        last_used_at : DateTime
+        created_at : DateTime
+    }
+
+    entity InstalledApp {
+        * id : UUID <<PK>>
+        --
+        tenant_id : UUID <<FK>>
+        app_id : UUID <<FK>>
+        app_owner_tenant_id : UUID
+        position : Integer
+        is_pinned : Boolean
+        last_used_at : DateTime
+        created_at : DateTime
+    }
+}
+
+' ========== Conversation Domain ==========
+package "Conversation Domain" #FFF3E0 {
+    entity Conversation {
+        * id : UUID <<PK>>
+        --
+        app_id : UUID <<FK>>
+        app_model_config_id : UUID <<FK>>
+        model_provider : String(255)
+        override_model_configs : Text
+        model_id : String(255)
+        mode : String(255)
+        name : String(255)
+        summary : Text
+        inputs : JSON
+        introduction : Text
+        system_instruction : Text
+        system_instruction_tokens : Integer
+        status : String(255)
+        invoke_from : String(255)
+        from_source : String(255)
+        from_end_user_id : UUID <<FK>>
+        from_account_id : UUID <<FK>>
+        read_at : DateTime
+        read_account_id : UUID
+        dialogue_count : Integer
+        is_deleted : Boolean
+        created_at : DateTime
+        updated_at : DateTime
+    }
+
+    entity Message {
+        * id : UUID <<PK>>
+        --
+        app_id : UUID <<FK>>
+        model_provider : String(255)
+        model_id : String(255)
+        override_model_configs : Text
+        conversation_id : UUID <<FK>>
+        inputs : JSON
+        query : Text
+        message : JSON
+        message_tokens : Integer
+        message_unit_price : Decimal
+        message_price_unit : Decimal
+        answer : Text
+        answer_tokens : Integer
+        answer_unit_price : Decimal
+        answer_price_unit : Decimal
+        parent_message_id : UUID
+        provider_response_latency : Float
+        total_price : Decimal
+        currency : String(255)
+        status : String(255)
+        error : Text
+        message_metadata : Text
+        invoke_from : String(255)
+        from_source : String(255)
+        from_end_user_id : UUID <<FK>>
+        from_account_id : UUID <<FK>>
+        agent_based : Boolean
+        workflow_run_id : UUID <<FK>>
+        app_mode : String(255)
+        created_at : DateTime
+        updated_at : DateTime
+    }
+
+    entity MessageFeedback {
+        * id : UUID <<PK>>
+        --
+        app_id : UUID <<FK>>
+        conversation_id : UUID <<FK>>
+        message_id : UUID <<FK>>
+        rating : String(255)
+        content : Text
+        from_source : String(255)
+        from_end_user_id : UUID
+        from_account_id : UUID
+        created_at : DateTime
+    }
+
+    entity MessageAnnotation {
+        * id : UUID <<PK>>
+        --
+        app_id : UUID <<FK>>
+        conversation_id : UUID <<FK>>
+        message_id : UUID <<FK>>
+        content : Text
+        question : Text
+        account_id : UUID <<FK>>
+        created_at : DateTime
+        updated_at : DateTime
+    }
+
+    entity MessageAgentThought {
+        * id : UUID <<PK>>
+        --
+        message_id : UUID <<FK>>
+        message_chain_id : UUID <<FK>>
+        position : Integer
+        thought : Text
+        tool : Text
+        tool_labels_str : Text
+        tool_meta_str : Text
+        tool_input : Text
+        observation : Text
+        answer : Text
+        message_token : Integer
+        message_unit_price : Decimal
+        answer_token : Integer
+        answer_unit_price : Decimal
+        tokens : Integer
+        total_price : Decimal
+        currency : String(255)
+        latency : Float
+        created_by_role : String(255)
+        created_by : UUID
+        created_at : DateTime
+    }
+
+    entity EndUser {
+        * id : UUID <<PK>>
+        --
+        tenant_id : UUID <<FK>>
+        app_id : UUID <<FK>>
+        type : String(255)
+        external_user_id : String(255)
+        name : String(255)
+        is_anonymous : Boolean
+        session_id : String(255)
+        created_at : DateTime
+        updated_at : DateTime
+    }
+}
+
+' ========== Dataset/Knowledge Domain ==========
+package "Dataset/Knowledge Domain" #FCE4EC {
+    entity Dataset {
+        * id : UUID <<PK>>
+        --
+        tenant_id : UUID <<FK>>
+        name : String(255)
+        description : Text
+        provider : String(255)
+        permission : DatasetPermissionEnum
+        data_source_type : String(255)
+        indexing_technique : String(255)
+        index_struct : Text
+        embedding_model : String(255)
+        embedding_model_provider : String(255)
+        keyword_number : Integer
+        collection_binding_id : UUID <<FK>>
+        retrieval_model : JSONB
+        built_in_field_enabled : Boolean
+        icon_info : JSONB
+        runtime_mode : String(255)
+        pipeline_id : UUID <<FK>>
+        chunk_structure : String(255)
+        enable_api : Boolean
+        created_by : UUID <<FK>>
+        created_at : DateTime
+        updated_by : UUID
+        updated_at : DateTime
+    }
+
+    entity Document {
+        * id : UUID <<PK>>
+        --
+        tenant_id : UUID <<FK>>
+        dataset_id : UUID <<FK>>
+        position : Integer
+        data_source_type : String(255)
+        data_source_info : Text (JSON)
+        dataset_process_rule_id : UUID <<FK>>
+        batch : String(255)
+        name : String(255)
+        created_from : String(255)
+        created_by : UUID <<FK>>
+        created_api_request_id : UUID
+        created_at : DateTime
+        processing_started_at : DateTime
+        file_id : Text
+        word_count : Integer
+        parsing_completed_at : DateTime
+        cleaning_completed_at : DateTime
+        splitting_completed_at : DateTime
+        tokens : Integer
+        indexing_latency : Float
+        completed_at : DateTime
+        is_paused : Boolean
+        paused_by : UUID
+        paused_at : DateTime
+        error : Text
+        stopped_at : DateTime
+        indexing_status : String(255)
+        enabled : Boolean
+        disabled_at : DateTime
+        disabled_by : UUID
+        archived : Boolean
+        archived_reason : String(255)
+        archived_by : UUID
+        archived_at : DateTime
+        updated_at : DateTime
+        doc_type : String(40)
+        doc_metadata : JSONB
+        doc_form : String(255)
+        doc_language : String(255)
+    }
+
+    entity DocumentSegment {
+        * id : UUID <<PK>>
+        --
+        tenant_id : UUID <<FK>>
+        dataset_id : UUID <<FK>>
+        document_id : UUID <<FK>>
+        position : Integer
+        content : Text
+        answer : Text
+        word_count : Integer
+        tokens : Integer
+        keywords : Text (JSON)
+        index_node_id : String(255)
+        index_node_hash : String(255)
+        hit_count : Integer
+        enabled : Boolean
+        disabled_at : DateTime
+        disabled_by : UUID
+        status : String(255)
+        created_by : UUID <<FK>>
+        created_at : DateTime
+        updated_by : UUID
+        updated_at : DateTime
+        indexing_at : DateTime
+        completed_at : DateTime
+        error : Text
+        stopped_at : DateTime
+    }
+
+    entity Embedding {
+        * id : UUID <<PK>>
+        --
+        hash : String(255)
+        embedding : Bytes
+        created_at : DateTime
+    }
+
+    entity DatasetCollectionBinding {
+        * id : UUID <<PK>>
+        --
+        provider_name : String(255)
+        model_name : String(255)
+        type : String(255)
+        collection_name : String(255)
+        created_at : DateTime
+    }
+
+    entity DatasetProcessRule {
+        * id : UUID <<PK>>
+        --
+        dataset_id : UUID <<FK>>
+        mode : String(255)
+        rules : Text (JSON)
+        created_by : UUID <<FK>>
+        created_at : DateTime
+        updated_by : UUID
+        updated_at : DateTime
+    }
+
+    entity AppDatasetJoin {
+        * id : UUID <<PK>>
+        --
+        app_id : UUID <<FK>>
+        dataset_id : UUID <<FK>>
+        created_at : DateTime
+    }
+
+    entity DatasetQuery {
+        * id : UUID <<PK>>
+        --
+        dataset_id : UUID <<FK>>
+        content : Text
+        source : String(255)
+        source_app_id : UUID
+        created_by_role : String(255)
+        created_by : UUID <<FK>>
+        created_at : DateTime
+    }
+
+    entity DatasetKeywordTable {
+        * id : UUID <<PK>>
+        --
+        dataset_id : UUID <<FK>>
+        keyword : Text
+        position : Integer
+        created_at : DateTime
+    }
+}
+
+' ========== Workflow Domain ==========
+package "Workflow Domain" #E1BEE7 {
+    entity Workflow {
+        * id : UUID <<PK>>
+        --
+        tenant_id : UUID <<FK>>
+        app_id : UUID <<FK>>
+        type : WorkflowType
+        version : String(255)
+        graph : Text (JSON)
+        features : Text (JSON)
+        hash : String(255)
+        created_by : UUID <<FK>>
+        created_at : DateTime
+        updated_by : UUID
+        updated_at : DateTime
+    }
+
+    entity WorkflowRun {
+        * id : UUID <<PK>>
+        --
+        tenant_id : UUID <<FK>>
+        app_id : UUID <<FK>>
+        sequence_number : Integer
+        workflow_id : UUID <<FK>>
+        type : String(255)
+        triggered_from : String(255)
+        version : String(255)
+        graph : Text (JSON)
+        inputs : JSON
+        status : ExecutionStatus
+        outputs : JSON
+        error : Text
+        elapsed_time : Float
+        total_tokens : Integer
+        total_steps : Integer
+        created_by : UUID <<FK>>
+        created_at : DateTime
+        finished_at : DateTime
+    }
+
+    entity WorkflowNodeExecution {
+        * id : UUID <<PK>>
+        --
+        tenant_id : UUID <<FK>>
+        app_id : UUID <<FK>>
+        workflow_id : UUID <<FK>>
+        triggered_from : String(255)
+        workflow_run_id : UUID <<FK>>
+        index : Integer
+        predecessor_node_id : String(255)
+        node_id : String(255)
+        node_type : NodeType
+        title : String(255)
+        inputs : JSON
+        process_data : JSON
+        outputs : JSON
+        status : String(255)
+        error : Text
+        elapsed_time : Float
+        execution_metadata : Text (JSON)
+        created_by : UUID <<FK>>
+        created_at : DateTime
+        finished_at : DateTime
+    }
+
+    entity WorkflowAppLog {
+        * id : UUID <<PK>>
+        --
+        tenant_id : UUID <<FK>>
+        app_id : UUID <<FK>>
+        workflow_id : UUID <<FK>>
+        workflow_run_id : UUID <<FK>>
+        level : String(255)
+        message : Text
+        created_at : DateTime
+    }
+}
+
+' ========== Tool Domain ==========
+package "Tool Domain" #B2DFDB {
+    entity BuiltinToolProvider {
+        * id : UUID <<PK>>
+        --
+        tenant_id : UUID <<FK>>
+        user_id : UUID <<FK>>
+        provider : String(255)
+        tool_name : String(255)
+        encrypted_credentials : Text
+        is_enabled : Boolean
+        created_at : DateTime
+        updated_at : DateTime
+    }
+
+    entity ApiToolProvider {
+        * id : UUID <<PK>>
+        --
+        tenant_id : UUID <<FK>>
+        user_id : UUID <<FK>>
+        name : String(255)
+        icon : String(255)
+        description : Text
+        schema : Text
+        schema_type_str : String(255)
+        tool_credential : Text
+        privacy_policy : String(255)
+        custom_disclaimer : Text
+        created_at : DateTime
+        updated_at : DateTime
+    }
+
+    entity WorkflowToolProvider {
+        * id : UUID <<PK>>
+        --
+        tenant_id : UUID <<FK>>
+        user_id : UUID <<FK>>
+        name : String(255)
+        icon : String(255)
+        description : Text
+        parameter_configurations : Text (JSON)
+        app_id : UUID <<FK>>
+        created_at : DateTime
+        updated_at : DateTime
+    }
+
+    entity Plugin {
+        * id : UUID <<PK>>
+        --
+        tenant_id : UUID <<FK>>
+        user_id : UUID <<FK>>
+        name : String(255)
+        description : Text
+        version : String(255)
+        configurate_methods : Text (JSON)
+        plugin_id : String(255)
+        declaration : Text (JSON)
+        manifest : Text (JSON)
+        install_status : String(255)
+        install_message : Text
+        created_at : DateTime
+        updated_at : DateTime
+    }
+}
+
+' ========== Relationships ==========
+
+' Account & Tenant Relationships
+Tenant ||..o{ TenantAccountJoin
+Account ||..o{ TenantAccountJoin
+TenantAccountJoin }o..|| Account : invited_by
+Account ||..o{ AccountIntegrate
+
+' Application Relationships
+Tenant ||..o{ App
+App ||..o| AppModelConfig
+App ||..o{ Site
+App ||..o{ ApiToken
+Tenant ||..o{ InstalledApp
+App ||..o{ InstalledApp
+
+' Conversation Relationships
+App ||..o{ Conversation
+Conversation ||..o{ Message
+Message ||..o{ MessageFeedback
+Message ||..o{ MessageAnnotation
+Message ||..o{ MessageAgentThought
+App ||..o{ EndUser
+Tenant ||..o{ EndUser
+
+' Dataset Relationships
+Tenant ||..o{ Dataset
+Dataset ||..o{ Document
+Document ||..o{ DocumentSegment
+DocumentSegment ||..o{ Embedding
+Dataset ||..o| DatasetCollectionBinding
+Dataset ||..o{ DatasetProcessRule
+App ||..o{ AppDatasetJoin
+Dataset ||..o{ AppDatasetJoin
+Dataset ||..o{ DatasetQuery
+Dataset ||..o{ DatasetKeywordTable
+
+' Workflow Relationships
+App ||..o{ Workflow
+Workflow ||..o{ WorkflowRun
+WorkflowRun ||..o{ WorkflowNodeExecution
+WorkflowRun ||..o{ WorkflowAppLog
+
+' Tool Relationships
+Tenant ||..o{ BuiltinToolProvider
+Tenant ||..o{ ApiToolProvider
+Tenant ||..o{ WorkflowToolProvider
+Tenant ||..o{ Plugin
+
+' Cross-domain Relationships
+Message ||..o| WorkflowRun : workflow_run_id
+WorkflowNodeExecution ||..o| WorkflowRun
+
+' ========== Legend ==========
+legend right
+  |= Color |= Domain |
+  | <#E3F2FD> | Account & Tenant |
+  | <#E8F5E9> | Application |
+  | <#FFF3E0> | Conversation |
+  | <#FCE4EC> | Dataset/Knowledge |
+  | <#E1BEE7> | Workflow |
+  | <#B2DFDB> | Tools |
+end legend
+
+note as N1
+  <b>Core Data Architecture:</b>
+  1. Multi-tenant architecture with Account/Tenant isolation
+  2. Application-centric design supporting multiple modes
+  3. Conversation/Message system for interaction history
+  4. Dataset system for knowledge base management
+  5. Workflow engine for complex business logic
+  6. Tool system for external service integration
+end note
+
+note bottom of Account
+  <b>Account Roles (TenantAccountRole)</b>
+  - owner: Owner
+  - admin: Administrator
+  - editor: Editor
+  - normal: Normal User
+  - dataset_operator: Dataset Operator
+end note
+
+@enduml

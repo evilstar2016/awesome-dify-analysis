@@ -1,0 +1,207 @@
+@startuml Dify Data Architecture Overview
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam linetype ortho
+skinparam roundcorner 10
+skinparam class {
+    BackgroundColor #F8F9FA
+    BorderColor #1976D2
+    ArrowColor #1976D2
+    FontColor #212529
+}
+skinparam package {
+    BackgroundColor #E3F2FD
+    BorderColor #1976D2
+    FontColor #1976D2
+}
+skinparam note {
+    BackgroundColor #FFF3E0
+    BorderColor #F57C00
+}
+
+title Dify Core Data Architecture Overview
+
+' ========== Core Entities ==========
+package "Account & Tenant" as AT #E3F2FD {
+    class Account {
+        id: UUID
+        name: String
+        email: String
+        status: AccountStatus
+    }
+
+    class Tenant {
+        id: UUID
+        name: String
+        plan: String
+        status: TenantStatus
+    }
+
+    class TenantAccountJoin {
+        id: UUID
+        role: TenantAccountRole
+    }
+}
+
+package "Application" as APP #E8F5E9 {
+    class App {
+        id: UUID
+        name: String
+        mode: AppMode
+        description: Text
+    }
+
+    class AppModelConfig {
+        id: UUID
+        model_id: String
+        agent_mode: JSON
+    }
+
+    class Workflow {
+        id: UUID
+        type: WorkflowType
+        graph: JSON
+        features: JSON
+    }
+}
+
+package "Conversation" as CONV #FFF3E0 {
+    class Conversation {
+        id: UUID
+        name: String
+        mode: String
+        status: String
+    }
+
+    class Message {
+        id: UUID
+        query: Text
+        answer: Text
+        tokens: Integer
+    }
+
+    class EndUser {
+        id: UUID
+        session_id: String
+    }
+}
+
+package "Knowledge Base" as KB #FCE4EC {
+    class Dataset {
+        id: UUID
+        name: String
+        indexing_technique: String
+        embedding_model: String
+    }
+
+    class Document {
+        id: UUID
+        name: String
+        indexing_status: String
+        word_count: Integer
+    }
+
+    class DocumentSegment {
+        id: UUID
+        content: Text
+        tokens: Integer
+        position: Integer
+    }
+
+    class Embedding {
+        id: UUID
+        hash: String
+        embedding: Bytes
+    }
+}
+
+package "Workflow Execution" as WF #E1BEE7 {
+    class WorkflowRun {
+        id: UUID
+        status: ExecutionStatus
+        inputs: JSON
+        outputs: JSON
+    }
+
+    class WorkflowNodeExecution {
+        id: UUID
+        node_type: NodeType
+        status: String
+    }
+}
+
+package "Tools" as TOOLS #B2DFDB {
+    class BuiltinToolProvider {
+        id: UUID
+        provider: String
+    }
+
+    class ApiToolProvider {
+        id: UUID
+        name: String
+        schema: Text
+    }
+
+    class WorkflowToolProvider {
+        id: UUID
+        name: String
+        app_id: UUID
+    }
+}
+
+' ========== Relationships ==========
+
+' Account & Tenant
+Tenant "1" -- "*" TenantAccountJoin
+Account "1" -- "*" TenantAccountJoin
+
+' Application
+Tenant "1" -- "*" App
+App "1" -- "0..1" AppModelConfig
+App "1" -- "*" Workflow
+
+' Conversation
+App "1" -- "*" Conversation
+Conversation "1" -- "*" Message
+Conversation "*" -- "0..1" EndUser
+
+' Knowledge Base
+Tenant "1" -- "*" Dataset
+Dataset "1" -- "*" Document
+Document "1" -- "*" DocumentSegment
+DocumentSegment "*" -- "*" Embedding
+
+' Workflow Execution
+Workflow "1" -- "*" WorkflowRun
+WorkflowRun "1" -- "*" WorkflowNodeExecution
+Message "*" -- "0..1" WorkflowRun
+
+' Tools
+Tenant "1" -- "*" BuiltinToolProvider
+Tenant "1" -- "*" ApiToolProvider
+Tenant "1" -- "*" WorkflowToolProvider
+
+' Cross-package relationships
+App "*" -- "*" Dataset : "AppDatasetJoin"
+
+' ========== Legend ==========
+legend right
+  |= Color |= Domain |
+  | <#E3F2FD> | Account & Tenant |
+  | <#E8F5E9> | Application |
+  | <#FFF3E0> | Conversation |
+  | <#FCE4EC> | Knowledge Base |
+  | <#E1BEE7> | Workflow Execution |
+  | <#B2DFDB> | Tools |
+end legend
+
+note as N1
+  <b>Core Data Flow:</b>
+  1. Tenant is the top-level entity for multi-tenancy
+  2. App is the core of applications, can be configured with multiple modes
+  3. Dataset provides knowledge base capabilities
+  4. Workflow implements complex business logic
+  5. Conversation/Message records interaction history
+end note
+
+@enduml

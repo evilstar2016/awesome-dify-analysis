@@ -1,0 +1,298 @@
+@startuml AccountPermission_OwnerTransfer
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+
+title Dify Account Permission Management Core Flow - 4. Secure Ownership Transfer
+
+participant CurrentOwner as "Current Owner\n(OWNER)"
+participant EmailClient as "Email Client"
+participant API as "Transfer API"
+participant AccountService as "AccountService\n(Token Service)"
+participant Database as "Database"
+participant RedisCache as "Redis\n(Token Storage)"
+participant EmailService as "Email Task"
+
+autonumber
+
+note over CurrentOwner
+  Ownership transfer is a three-step secure process:
+  1. Send confirmation email to current owner
+  2. Verify verification code in email
+  3. Transfer to target member
+end note
+
+CurrentOwner ->> API: POST /workspaces/current/members/send-owner-transfer-confirm-email\n{language: "en-US"}
+activate API
+
+note over API
+  Decorator validation:
+  - @is_allow_transfer_owner
+  - @account_initialization_required
+  - @login_required
+end note
+
+API ->> API: current_user = current_account_with_tenant()
+
+API ->> AccountService: is_email_send_ip_limit(ip_address)
+activate AccountService
+AccountService -->> API: is_limited (bool)
+deactivate AccountService
+
+alt IP send limit reached
+  API -->> CurrentOwner: EmailSendIpLimitError\n429 Too Many Requests
+  deactivate API
+else IP not limited
+
+  API ->> API: Verify current user is OWNER\nTenantService.is_owner(user, tenant)
+
+  alt Not OWNER
+    API -->> CurrentOwner: NotOwnerError\n403 Forbidden
+    deactivate API
+  else Is OWNER
+
+    note over API
+      Generate transfer verification token and code
+    end note
+
+    API ->> AccountService: send_owner_transfer_email(\n  account, email, language, workspace_name)
+    activate AccountService
+
+    AccountService ->> AccountService: code = generate_6digit_code()
+
+    AccountService ->> AccountService: token = TokenManager.generate_token(\n  account=user,\n  token_type="owner_transfer",\n  additional_data={code: code})
+
+    note over AccountService
+      Token contains:
+      - Account ID
+      - Email
+      - Verification code
+      - Expiration time
+    end note
+
+    AccountService ->> RedisCache: Store token and code
+    activate RedisCache
+    RedisCache -->> AccountService: stored
+    deactivate RedisCache
+
+    AccountService ->> EmailService: send_owner_transfer_confirm_task(\n  email, code, workspace_name, language)
+    activate EmailService
+    EmailService -->> AccountService: task_queued
+    deactivate EmailService
+
+    AccountService -->> API: token
+    deactivate AccountService
+
+    API -->> CurrentOwner: {result: "success", data: token}\n200 OK
+
+  end
+
+end
+
+deactivate API
+
+CurrentOwner ->> EmailClient: Receive email\ncontaining verification code
+
+note over EmailClient
+  Email content:
+  - Verification code (6-digit number)
+  - Workspace name
+  - Warning message
+end note
+
+CurrentOwner ->> API: POST /workspaces/current/members/owner-transfer-check\n{token: token, code: "123456"}
+activate API
+
+API ->> AccountService: is_owner_transfer_error_rate_limit(\n  user_email)
+activate AccountService
+AccountService -->> API: is_limited (bool)
+deactivate AccountService
+
+alt Attempt limit exceeded
+  API -->> CurrentOwner: OwnerTransferLimitError\n429 Too Many Requests
+  deactivate API
+else Limit not exceeded
+
+  API ->> AccountService: get_owner_transfer_data(token)
+  activate AccountService
+
+  note over AccountService
+    Get token data from Redis
+  end note
+
+  AccountService ->> RedisCache: GET owner_transfer_token:{token_hash}
+  activate RedisCache
+  RedisCache -->> AccountService: token_data | null
+  deactivate RedisCache
+
+  alt Token does not exist or expired
+    AccountService -->> API: null
+    API -->> CurrentOwner: InvalidTokenError\n400 Bad Request
+    deactivate API
+    deactivate AccountService
+  else Token valid
+
+    AccountService -->> API: token_data {email, code}
+    deactivate AccountService
+
+    API ->> API: Verify email match\nif token_data.email != current_user.email
+
+    alt Email does not match
+      API -->> CurrentOwner: InvalidEmailError\n400 Bad Request
+      deactivate API
+    else Email matches
+
+      alt Verification code incorrect
+        API ->> AccountService: add_owner_transfer_error_rate_limit(\n  user_email)
+        activate AccountService
+        AccountService -->> API: limit_added
+        deactivate AccountService
+
+        API -->> CurrentOwner: EmailCodeError\n400 Bad Request
+        deactivate API
+      else Verification code correct
+
+        note over API
+          Verification passed, revoke original token and generate new token
+        end note
+
+        API ->> AccountService: revoke_owner_transfer_token(token)
+        activate AccountService
+
+        AccountService ->> RedisCache: DEL owner_transfer_token:{hash}
+        activate RedisCache
+        RedisCache -->> AccountService: deleted
+        deactivate RedisCache
+
+        AccountService -->> API: revoked
+        deactivate AccountService
+
+        API ->> AccountService: generate_owner_transfer_token(\n  email, code, additional_data={})
+        activate AccountService
+
+        AccountService ->> AccountService: new_token = TokenManager.generate_token(...)
+
+        AccountService ->> RedisCache: Store new token
+        activate RedisCache
+        RedisCache -->> AccountService: stored
+        deactivate RedisCache
+
+        AccountService -->> API: new_token
+        deactivate AccountService
+
+        API ->> AccountService: reset_owner_transfer_error_rate_limit(\n  user_email)
+        activate AccountService
+        AccountService -->> API: reset
+        deactivate AccountService
+
+        API -->> CurrentOwner: {is_valid: true, email: email, token: new_token}\n200 OK
+
+      end
+
+    end
+
+  end
+
+end
+
+deactivate API
+
+CurrentOwner ->> API: POST /workspaces/current/members/{new_owner_id}/owner-transfer\n{token: new_token}
+activate API
+
+note over API
+  Final transfer execution
+  Email and code already verified at this point
+end note
+
+API ->> API: new_owner = db.session.get(Account, new_owner_id)
+
+alt New owner does not exist
+  API -->> CurrentOwner: 404 Not Found
+  deactivate API
+else New owner exists
+
+  API ->> API: Verify new owner is in workspace\nTenantService.is_member(new_owner, tenant)
+
+  alt Not a member
+    API -->> CurrentOwner: MemberNotInTenantError\n404 Not Found
+    deactivate API
+  else Is a member
+
+    API ->> AccountService: get_owner_transfer_data(token)
+    activate AccountService
+    AccountService -->> API: token_data
+    deactivate AccountService
+
+    alt Token invalid
+      API -->> CurrentOwner: InvalidTokenError\n400 Bad Request
+      deactivate API
+    else Token valid
+
+      API ->> API: Final email verification\nif token_data.email != current_user.email
+
+      alt Email does not match
+        API -->> CurrentOwner: InvalidEmailError\n400 Bad Request
+        deactivate API
+      else Email matches
+
+        note over API
+          Execute role transfer
+        end note
+
+        API ->> AccountService: revoke_owner_transfer_token(token)
+        activate AccountService
+        AccountService -->> API: revoked
+        deactivate AccountService
+
+        API ->> Database: UPDATE tenant_account_joins\nSET role = "owner"\nWHERE account_id = new_owner_id
+        activate Database
+        Database -->> API: updated
+        deactivate Database
+
+        API ->> Database: UPDATE tenant_account_joins\nSET role = "admin"\nWHERE account_id = current_owner_id
+        activate Database
+        Database -->> API: updated
+        deactivate Database
+
+        API ->> EmailService: send_new_owner_transfer_notify_email(\n  new_owner, email, workspace_name)
+        activate EmailService
+        EmailService -->> API: task_queued
+        deactivate EmailService
+
+        API ->> EmailService: send_old_owner_transfer_notify_notify_email(\n  current_owner, email, workspace_name, new_owner_email)
+        activate EmailService
+        EmailService -->> API: task_queued
+        deactivate EmailService
+
+        API -->> CurrentOwner: {result: "success"}\n200 OK
+
+      end
+
+    end
+
+  end
+
+end
+
+deactivate API
+
+note over CurrentOwner
+  Ownership transfer completed:
+  1. Original owner demoted to ADMIN
+  2. New owner promoted to OWNER
+  3. Both receive email notifications
+  4. Transfer token revoked
+  5. New permissions take effect immediately
+end note
+
+@enduml

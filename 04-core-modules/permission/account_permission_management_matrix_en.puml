@@ -1,0 +1,196 @@
+@startuml AccountPermission_Matrix
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam classBackgroundColor #E8F4F8
+skinparam classBorderColor #1976D2
+skinparam arrowColor #1976D2
+
+title Dify Account Permission Matrix and Permission Check Flow
+
+package "Permission System" #F5F5F5 {
+  enum Role {
+    OWNER: Workspace Owner (Highest Permission)
+    ADMIN: Administrator (Near Highest Permission)
+    EDITOR: Editor (Can Edit Apps and Knowledge Bases)
+    NORMAL: Normal Member (Read-only Access)
+    DATASET_OPERATOR: Dataset Operator (Dataset-related Operations Only)
+  }
+  
+  class PermissionMatrix {
+    --
+    Member Management Permissions
+    View Member List: [OWNER, ADMIN, EDITOR, NORMAL]
+    Invite New Members: [OWNER, ADMIN]
+    Remove Members: [OWNER]
+    Update Member Roles: [OWNER]
+    --
+    Workspace Management Permissions
+    Modify Workspace Settings: [OWNER, ADMIN]
+    Transfer Ownership: [OWNER]
+    --
+    Application Management Permissions
+    Create Apps: [OWNER, ADMIN, EDITOR]
+    Edit Apps: [OWNER, ADMIN, EDITOR]
+    Delete Apps: [OWNER, ADMIN, EDITOR]
+    Publish Apps: [OWNER, ADMIN, EDITOR]
+    --
+    Knowledge Base Management Permissions
+    Create Knowledge Bases: [OWNER, ADMIN, EDITOR]
+    Edit Knowledge Bases: [OWNER, ADMIN, EDITOR, NORMAL, DATASET_OPERATOR]
+    Delete Knowledge Bases: [OWNER, ADMIN, EDITOR]
+    Upload Documents: [OWNER, ADMIN, EDITOR, NORMAL, DATASET_OPERATOR]
+  }
+}
+
+package "Permission Check Flow" #F0F8FF {
+  class PermissionCheckFlow {
+    --
+    .. Step 1: Authentication Check ..
+    Verify user is logged in
+    Verify account status (not BANNED/CLOSED)
+    Verify access token is valid
+    --
+    .. Step 2: Initialization Check ..
+    Verify account is initialized
+    Verify workspace is set up
+    --
+    .. Step 3: Role Acquisition ..
+    Get user role from TenantAccountJoin
+    Load role into Account object's role property
+    --
+    .. Step 4: Permission Validation ..
+    Get required permission list
+    Check if user role is in permission list
+    --
+    .. Step 5: Operation Validation ..
+    Check operation's specific business rules
+    For example: cannot operate on self, cannot remove last OWNER
+    --
+    .. Step 6: Execute Operation ..
+    Execute database operations
+    Update related caches
+    Send notifications
+  }
+}
+
+package "Permission Check Implementation" #FFF5E6 {
+  class RoleCheckers {
+    --
+    is_privileged_role(role): bool
+    -> Check if OWNER or ADMIN
+    --
+    is_admin_role(role): bool
+    -> Check if ADMIN
+    --
+    is_editing_role(role): bool
+    -> Check if OWNER, ADMIN or EDITOR
+    --
+    is_dataset_edit_role(role): bool
+    -> Check if can edit datasets
+    --
+    is_non_owner_role(role): bool
+    -> Check if non-OWNER role
+  }
+  
+  class ActionPermissionMatrix {
+    --
+    add(Invite Members): [OWNER, ADMIN]
+    remove(Remove Members): [OWNER]
+    update(Update Roles): [OWNER]
+    --
+    Check Logic:
+    1. Get operator's role
+    2. Check if role is in allowed list
+    3. Check cannot operate on self
+  }
+}
+
+package "Permission-related Decorators" #E6F3FF {
+  class Decorators {
+    @login_required
+    -> Verify user is logged in
+    -> Inject current_user
+    --
+    @setup_required
+    -> Verify system initialization
+    --
+    @account_initialization_required
+    -> Verify account is initialized
+    --
+    @edit_permission_required
+    -> Verify user has edit permission
+    -> account.has_edit_permission == True
+    --
+    @is_allow_transfer_owner
+    -> Verify workspace allows ownership transfer
+    --
+    @cloud_edition_billing_resource_check(resource)
+    -> Check billing limits
+    -> Member count, app count, storage space, etc.
+  }
+}
+
+package "Key Points of Permission Check" #F0FFF0 {
+  class CriticalChecks {
+    --
+    1. TenantService.check_member_permission()
+    -> Core permission check function
+    -> Verify operator permissions
+    -> Prevent self-operation
+    --
+    2. Account.has_edit_permission
+    -> Edit permission property check
+    -> Used for @edit_permission_required
+    --
+    3. Rate Limiting
+    -> Login error count limits
+    -> Email send IP limits
+    -> Ownership transfer attempt limits
+    --
+    4. Token Verification
+    -> JWT token signature verification
+    -> Refresh token validity check
+    -> Invitation token time limits
+    --
+    5. Workspace Status Check
+    -> Ensure workspace status is NORMAL (not ARCHIVE)
+    -> Ensure account-workspace relationship exists
+  }
+}
+
+package "Special Permission Scenarios" #FFE6E6 {
+  class SpecialPermissions {
+    --
+    Member Invitation Permissions
+    -> Only OWNER and ADMIN can invite
+    -> Check workspace member count limits
+    -> Verify email address validity
+    --
+    Role Update Permissions
+    -> Only OWNER can update others' roles
+    -> Cannot operate on self
+    -> New role cannot be same as old role
+    --
+    Member Removal Permissions
+    -> Only OWNER can remove members
+    -> Cannot remove self
+    -> Need to verify member is actually in workspace
+    --
+    Ownership Transfer Permissions
+    -> Only OWNER can transfer
+    -> Requires email verification code for secondary confirmation
+    -> Original owner automatically demoted to ADMIN
+    -> New owner must already be a member
+  }
+}
+
+'' Permission check flow relationships
+PermissionCheckFlow -- RoleCheckers: uses
+PermissionCheckFlow -- ActionPermissionMatrix: checks
+PermissionCheckFlow -- Decorators: uses
+ActionPermissionMatrix -- Role: validates
+RoleCheckers -- Role: checks
+CriticalChecks -- PermissionCheckFlow: implements
+SpecialPermissions -- ActionPermissionMatrix: extends
+
+@enduml

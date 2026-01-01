@@ -1,0 +1,188 @@
+@startuml PDF Document Import Detailed Sequence Diagram
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #6C757D
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam sequenceLifeLineBorderColor #E3F2FD
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+
+title **Dify PDF Document Import Detailed Sequence Diagram**
+
+actor "User" as User
+participant "File Upload API" as FileAPI
+participant "Dataset Service" as DatasetService
+participant "Upload File Storage" as UploadFile
+participant "Indexing Runner" as IndexingRunner
+participant "Index Processor Factory" as IndexProcessorFactory
+participant "Paragraph Index Processor" as ParagraphIndexProcessor
+participant "Extract Processor" as ExtractProcessor
+participant "PDF Extractor" as PdfExtractor
+participant "pypdfium2" as PyPdfium2
+participant "Unstructured API" as UnstructuredAPI
+participant "Cache System" as Cache
+participant "Vector Database" as VectorDB
+database "PostgreSQL" as Database
+
+== 1. File Upload Phase ==
+User -> FileAPI: POST /files (Upload PDF file)
+activate FileAPI
+FileAPI -> FileAPI: Validate file type and size
+FileAPI -> UploadFile: Save file to storage system
+activate UploadFile
+UploadFile -> Database: Create UploadFile record
+UploadFile --> FileAPI: Return file ID
+deactivate UploadFile
+FileAPI --> User: Return upload success and file ID
+deactivate FileAPI
+
+== 2. Create Dataset Document ==
+User -> DatasetService: POST /datasets/{id}/documents
+activate DatasetService
+DatasetService -> Database: Create DatasetDocument record
+note right: Status set to QUEUED
+DatasetService -> IndexingRunner: Trigger asynchronous indexing task
+note right: Via Celery queue
+DatasetService --> User: Return document creation success
+deactivate DatasetService
+
+== 3. Asynchronous Document Processing ==
+activate IndexingRunner
+IndexingRunner -> Database: Re-query DatasetDocument
+IndexingRunner -> Database: Get Dataset information
+IndexingRunner -> Database: Get DatasetProcessRule configuration
+
+IndexingRunner -> IndexProcessorFactory: Create index processor
+activate IndexProcessorFactory
+IndexProcessorFactory -> ParagraphIndexProcessor: Instantiate paragraph index processor
+activate ParagraphIndexProcessor
+IndexProcessorFactory --> IndexingRunner: Return processor instance
+deactivate IndexProcessorFactory
+
+== 4. Text Extraction Phase ==
+IndexingRunner -> ParagraphIndexProcessor: extract(extract_setting, process_rule)
+ParagraphIndexProcessor -> ExtractProcessor: Create extract processor instance
+activate ExtractProcessor
+
+alt ETL_TYPE == "Unstructured"
+    ExtractProcessor -> UnstructuredAPI: Send PDF file
+    activate UnstructuredAPI
+    note right: Support complex layout, table, image parsing
+    UnstructuredAPI --> ExtractProcessor: Return structured text
+    deactivate UnstructuredAPI
+else Default local processing
+    ExtractProcessor -> PdfExtractor: extract_from_file(file_path)
+    activate PdfExtractor
+    
+    PdfExtractor -> Cache: Check cache(file_path + modified_time)
+    activate Cache
+    
+    alt Cache exists
+        Cache --> PdfExtractor: Return cached text
+    else Cache not exists
+        PdfExtractor -> PyPdfium2: Parse PDF file
+        activate PyPdfium2
+        loop For each page
+            PyPdfium2 -> PyPdfium2: Extract page text
+        end
+        PyPdfium2 --> PdfExtractor: Return all page text
+        deactivate PyPdfium2
+        PdfExtractor -> Cache: Store extraction result in cache
+    end
+    deactivate Cache
+    
+    PdfExtractor --> ExtractProcessor: Return Document list
+    deactivate PdfExtractor
+end
+
+ExtractProcessor --> ParagraphIndexProcessor: Return extracted Document object
+deactivate ExtractProcessor
+
+ParagraphIndexProcessor --> IndexingRunner: Return text document list
+
+IndexingRunner -> Database: Update document status to SPLITTING
+note right: Set parsing_completed_at timestamp
+
+== 5. Text Transformation and Segmentation ==
+IndexingRunner -> ParagraphIndexProcessor: transform(documents, processing_rule)
+ParagraphIndexProcessor -> ParagraphIndexProcessor: Get text splitter configuration
+note right: chunk_size, chunk_overlap, separator
+
+loop For each document
+    ParagraphIndexProcessor -> ParagraphIndexProcessor: Execute text segmentation
+    note right: Maintain semantic integrity
+end
+
+ParagraphIndexProcessor --> IndexingRunner: Return segmented document paragraphs
+
+== 6. Segment Storage ==
+IndexingRunner -> Database: Batch create DocumentSegment records
+note right: Save content, position, word_count etc.
+
+== 7. Vectorization and Indexing ==
+IndexingRunner -> ParagraphIndexProcessor: load(documents, dataset)
+
+alt Enable keyword indexing
+    ParagraphIndexProcessor -> ParagraphIndexProcessor: Process keyword indexing
+end
+
+loop For each document segment
+    ParagraphIndexProcessor -> ParagraphIndexProcessor: Generate embedding vectors
+    note right: Call configured embedding model
+    ParagraphIndexProcessor -> VectorDB: Store vectors in vector database
+    activate VectorDB
+    VectorDB -> VectorDB: Build retrieval index
+    VectorDB --> ParagraphIndexProcessor: Confirm storage success
+    deactivate VectorDB
+end
+
+ParagraphIndexProcessor --> IndexingRunner: Index building completed
+
+== 8. Complete Processing ==
+IndexingRunner -> Database: Update document status to COMPLETED
+note right: Set completed_at timestamp
+
+IndexingRunner -> IndexingRunner: Send processing completion notification
+deactivate ParagraphIndexProcessor
+deactivate IndexingRunner
+
+== 9. Query Retrieval Phase ==
+User -> DatasetService: Query document content
+activate DatasetService
+DatasetService -> ParagraphIndexProcessor: retrieve(query)
+activate ParagraphIndexProcessor
+ParagraphIndexProcessor -> VectorDB: Vector similarity search
+activate VectorDB
+VectorDB --> ParagraphIndexProcessor: Return relevant segments
+deactivate VectorDB
+ParagraphIndexProcessor -> Database: Get segment details
+ParagraphIndexProcessor --> DatasetService: Return search results
+deactivate ParagraphIndexProcessor
+DatasetService --> User: Return query results
+deactivate DatasetService
+
+== Exception Handling ==
+note over IndexingRunner, Database
+**Exception Handling Mechanism**:
+- DocumentIsPausedError: Document processing paused
+- ProviderTokenNotInitError: Model configuration error  
+- ObjectDeletedError: Document deleted
+- Other exceptions: Update status to ERROR, record error information
+end note
+
+== Third-party Integration Description ==
+note over ExtractProcessor, UnstructuredAPI
+**Supported Third-party Services**:
+- Unstructured API: Advanced PDF parsing
+- Firecrawl: Web content extraction
+- Jina Reader: Multimodal processing
+- Custom ETL interface extension
+
+**Configuration Parameters**:
+- ETL_TYPE: Select processing engine
+- UNSTRUCTURED_API_URL/KEY: API configuration
+end note
+
+@enduml
