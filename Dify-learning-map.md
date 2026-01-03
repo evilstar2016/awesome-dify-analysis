@@ -1,11 +1,9 @@
 # 🗺️ Dify 学习地图
 
-🌍 [English Version](./Dify-learning-map_en.md) | [中文版本](./Dify-learning-map.md)
-
 > **从入门到精通 Dify 架构的完整学习路径**  
 > 适合架构师、开发者、AI 工程师系统性学习 Dify
 
-![ 一张图了解Dify的学习路径 ](./Dify-learning-map.png)
+![ 一张图了解Dify的学习路径 ](https://mmbiz.qpic.cn/mmbiz_png/UB4phSuxXqHMPC0Q6DZTRBjN7nz7VQRQfvB3ZKaIcjmgWbpRmEnWibQsq2DkdODbIWHrAAUk8aNhAoVyr1HyQiaA/640?wx_fmt=png&amp;from=appmsg)
 
 ---
 
@@ -13,19 +11,7 @@
 
 本学习地图基于 **认知难度递进** 和 **实战应用场景** 设计，分为 5 个阶段：
 
-```mermaid
-graph LR
-    A[🎯 阶段1: 快速入门] --> B[🏗️ 阶段2: 架构理解]
-    B --> C[⚙️ 阶段3: 核心模块]
-    C --> D[🔌 阶段4: 集成扩展]
-    D --> E[🚀 阶段5: 生产实战]
-    
-    style A fill:#e1f5e1
-    style B fill:#e3f2fd
-    style C fill:#fff3e0
-    style D fill:#f3e5f5
-    style E fill:#ffebee
-```
+![](https://mmbiz.qpic.cn/mmbiz_png/UB4phSuxXqEnMZZKWMB5uxQvuTibPeY6YfiaAichZEVGhWYIxPtc5ia8ficUMhdiam6EqKSfZR6vNNNxlaVMyacdnBAQ/640?wx_fmt=png&tp=webp&wxfrom=5&wx_lazy=1#imgIndex=0)
 
 **预计学习时间**：
 - **速成路径**（核心能力）：3-5 天
@@ -67,23 +53,7 @@ graph LR
 
 ### 📐 架构图学习路径
 
-```mermaid
-graph TD
-    A[完整组件架构图] --> B[前端架构]
-    A --> C[后端分层]
-    A --> D[核心模块]
-    
-    B --> B1[Next.js App Router]
-    B --> B2[状态管理]
-    
-    C --> C1[Controller层]
-    C --> C2[Service层]
-    C --> C3[Repository层]
-    
-    D --> D1[Workflow引擎]
-    D --> D2[Agent系统]
-    D --> D3[RAG管道]
-```
+![](https://mmbiz.qpic.cn/mmbiz_png/UB4phSuxXqEnMZZKWMB5uxQvuTibPeY6Y8TLSMxjtmqmm0lnc5iaVh0464sibRUo7qrGicEiawYQHBA6Yc8hzccJ6UA/640?wx_fmt=png&watermark=1&tp=webp&wxfrom=5&wx_lazy=1#imgIndex=1)
 
 ### 📖 必读文档
 
@@ -124,17 +94,7 @@ graph TD
 
 按照 **依赖关系** 和 **复杂度** 设计学习路径：
 
-```mermaid
-graph TD
-    A[Model Runtime] --> B[Prompt 工程]
-    B --> C[Workflow 引擎]
-    B --> D[Agent 系统]
-    C --> E[Knowledge Base]
-    D --> E
-    E --> F[Tools & Plugins]
-    F --> G[Observability]
-    G --> H[Permission]
-```
+![](https://mmbiz.qpic.cn/mmbiz_png/UB4phSuxXqEnMZZKWMB5uxQvuTibPeY6YhN25UibiccQYbjWDYFDzJhw3WVNm6oW3Vp7sFP3KlmMR8FKceh35icF7A/640?wx_fmt=png&watermark=1&tp=webp&wxfrom=5&wx_lazy=1#imgIndex=2)
 
 ### 📖 分模块学习路径
 
