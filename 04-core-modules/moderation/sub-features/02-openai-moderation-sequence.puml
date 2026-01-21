@@ -1,0 +1,66 @@
+@startuml openai-moderation-sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+skinparam sequenceParticipant {
+    BackgroundColor #E1F5FE
+    BorderColor #01579B
+}
+
+participant "应用" as App
+participant "OpenAIModeration" as OpenAI
+participant "ModelManager" as Manager
+participant "OpenAI API" as OPENAI_API
+participant "Trace 系统" as Trace
+
+App -> OpenAI: moderation_for_inputs(inputs, query)
+note right of App
+  用户输入或查询
+end note
+
+OpenAI -> OpenAI: 检查配置\nself.config
+alt 配置不存在
+  OpenAI -> App: ValueError("The config is not set.")
+end
+
+alt 未启用输入审核
+  OpenAI -> App: ModerationInputsResult(flagged=False)
+else 已启用输入审核
+  OpenAI -> OpenAI: 提取预设响应
+  OpenAI -> OpenAI: 构建文本\n"\\n".join(inputs.values())
+  
+  OpenAI -> Manager: get_model_instance(\n  tenant_id=...,\n  provider="openai",\n  model_type=MODERATION,\n  model="omni-moderation-latest")
+  
+  Manager -> Manager: 创建 OpenAI 模型\n实例
+  Manager -> OpenAI: 返回模型实例
+  
+  OpenAI -> OPENAI_API: invoke_moderation(text)
+  note right of OPENAI_API
+    发送内容到 OpenAI
+    Moderation API
+  end note
+  
+  OPENAI_API -> OPENAI_API: 使用 ML 模型\n进行内容分类
+  OPENAI_API -> OpenAI: 返回审核结果\n(True/False)
+  
+  OpenAI -> OpenAI: flagged = 审核结果
+  
+  alt 审核不通过 (flagged=True)
+    OpenAI -> Trace: 记录审核失败\n[ModerationTraceInfo]
+    OpenAI -> App: ModerationInputsResult(\n  flagged=True,\n  action=DIRECT_OUTPUT,\n  preset_response=预设响应)
+  else 审核通过 (flagged=False)
+    OpenAI -> Trace: 记录审核通过
+    OpenAI -> App: ModerationInputsResult(\n  flagged=False,\n  action=DIRECT_OUTPUT,\n  preset_response="")
+  end
+end
+
+@enduml

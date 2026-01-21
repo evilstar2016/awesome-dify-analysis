@@ -1,0 +1,111 @@
+@startuml
+!define DIRECTION top to bottom
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+skinparam sequenceParticipant {
+    BackgroundColor #E1F5FE
+    BorderColor #01579B
+}
+
+actor User
+participant "应用运行器\n(AppRunner)" as AppRunner
+participant "输入审核\n(InputModeration)" as InputMod
+participant "审核工厂\n(ModerationFactory)" as Factory
+participant "审核策略\n(Moderation)" as Strategy
+participant "数据库\n(DB)" as DB
+participant "Trace系统\n(TraceManager)" as Trace
+
+User -> AppRunner: 提交用户输入
+activate AppRunner
+
+AppRunner -> InputMod: check(app_id, tenant_id, app_config, inputs, query, message_id)
+activate InputMod
+
+InputMod -> InputMod: 检查是否启用敏感词回避
+note right of InputMod
+  如果未启用，直接返回(False, inputs, query)
+end note
+
+InputMod -> Factory: __init__(type, app_id, tenant_id, config)
+activate Factory
+
+Factory -> Factory: extension_class = code_based_extension.extension_class()
+note right of Factory
+  ExtensionModule.MODERATION, name
+  从扩展系统获取策略类
+end note
+Factory -> Strategy: __init__(app_id, tenant_id, config)
+activate Strategy
+
+Strategy -> Strategy: __init__() - 初始化策略实例
+deactivate Strategy
+
+Factory -->> InputMod: ModerationFactory 实例
+deactivate Factory
+
+InputMod -> Strategy: moderation_for_inputs(inputs, query)
+activate Strategy
+
+Strategy -> Strategy: 执行具体的审核逻辑
+note right of Strategy
+  - Keywords: 关键词匹配
+  - OpenAI: 调用 API
+  - API: 调用自定义端点
+end note
+
+Strategy -->> InputMod: ModerationInputsResult
+deactivate Strategy
+
+InputMod -> Trace: 记录追踪信息（如果提供 trace_manager）
+activate Trace
+note right of Trace
+  TraceTask(
+    TraceTaskName.MODERATION_TRACE,
+    message_id,
+    moderation_result,
+    inputs,
+    timer
+  )
+end note
+Trace -> DB: 保存审核记录
+Trace -->> InputMod: OK
+deactivate Trace
+
+InputMod -> InputMod: 判断审核结果
+alt flagged = False
+    InputMod -->> AppRunner: (False, inputs, query)
+    
+else action = DIRECT_OUTPUT
+    InputMod --x AppRunner: 抛出 ModerationError(preset_response)
+    AppRunner -->> User: 显示预设响应
+    
+else action = OVERRIDDEN
+    InputMod -> InputMod: 使用修改的内容
+    note right of InputMod
+      inputs = moderation_result.inputs
+      query = moderation_result.query
+    end note
+    InputMod -->> AppRunner: (True, modified_inputs, modified_query)
+end
+
+AppRunner -> AppRunner: 继续处理用户输入
+note right of AppRunner
+  或捕获异常，
+  向用户返回错误
+end note
+
+AppRunner -->> User: 处理结果或错误
+deactivate InputMod
+deactivate AppRunner
+
+@enduml

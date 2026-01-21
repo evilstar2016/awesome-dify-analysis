@@ -1,0 +1,82 @@
+@startuml api-moderation-sequence
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+skinparam sequenceParticipant {
+    BackgroundColor #E1F5FE
+    BorderColor #01579B
+}
+
+participant "应用" as App
+participant "ApiModeration" as API
+participant "数据库" as DB
+participant "Extension\nRequestor" as Requestor
+participant "外部审核\nAPI" as ExternalAPI
+
+App -> API: moderation_for_inputs(inputs, query)
+note right of App
+  用户输入内容
+end note
+
+API -> API: 检查配置
+alt 配置不存在
+  API -> App: ValueError("The config is not set.")
+end
+
+alt 未启用输入审核
+  API -> App: ModerationInputsResult(flagged=False)
+else 已启用输入审核
+  API -> API: 构建请求参数\nModerationInputParams(\n  app_id=...,\n  inputs=...,\n  query=...)
+  
+  API -> DB: 查询 APIBasedExtension\nwhere id=api_based_extension_id
+  
+  DB -> API: 返回 Extension\n(api_endpoint, api_key)
+  
+  alt Extension 不存在
+    API -> App: ValueError("API-based Extension not found")
+  else Extension 存在
+    API -> API: 解密 API Key\ndecrypt_token(tenant_id, api_key)
+    
+    API -> Requestor: 创建 Requestor\nAPIBasedExtensionRequestor(\n  endpoint,\n  api_key)
+    
+    Requestor -> ExternalAPI: POST request(\n  extension_point=APP_MODERATION_INPUT,\n  params={...})
+    note right of ExternalAPI
+      外部审核服务
+      执行自定义逻辑
+    end note
+    
+    ExternalAPI -> ExternalAPI: 执行审核逻辑
+    note right of ExternalAPI
+      - 检查关键词
+      - 调用 ML 模型
+      - 调用其他 API
+      - 等等
+    end note
+    
+    alt 审核完成
+      ExternalAPI -> Requestor: 返回结果\n{\n  flagged: bool,\n  action: str,\n  preset_response: str\n}
+      
+      Requestor -> API: 返回响应
+      
+      API -> API: 解析并验证\nModerationInputsResult\n.model_validate(result)
+      
+      API -> App: 返回审核结果
+    else 审核超时/失败
+      ExternalAPI -> Requestor: 超时或错误
+      Requestor -> API: 异常
+      API -> API: 捕获异常\nlogger.exception(...)
+      API -> App: 返回默认结果\n(通常允许通过)
+    end
+  end
+end
+
+@enduml

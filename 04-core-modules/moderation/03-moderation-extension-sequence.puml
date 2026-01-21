@@ -1,0 +1,162 @@
+@startuml
+!define DIRECTION top to bottom
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+skinparam sequenceParticipant {
+    BackgroundColor #E1F5FE
+    BorderColor #01579B
+}
+
+participant "开发者" as Developer
+participant "审核模块\n(Moderation)" as Core
+participant "扩展系统\n(ExtensionModule)" as Extension
+participant "工厂\n(ModerationFactory)" as Factory
+participant "应用配置\n(AppConfig)" as Config
+
+Developer -> Developer: 1. 实现自定义策略类
+activate Developer
+
+note over Developer
+  class CustomModeration(Moderation):
+    name = "custom"
+    
+    @classmethod
+    def validate_config(cls, tenant_id, config):
+      # 验证配置
+      pass
+    
+    def moderation_for_inputs(self, inputs, query):
+      # 输入审核逻辑
+      pass
+    
+    def moderation_for_outputs(self, text):
+      # 输出审核逻辑
+      pass
+end note
+
+Developer -> Core: 2. 继承基类 Moderation
+activate Core
+note right of Core
+  api/core/moderation/base.py
+  - validate_config() - 抽象方法
+  - moderation_for_inputs() - 抽象方法
+  - moderation_for_outputs() - 抽象方法
+end note
+
+Developer -> Developer: 3. 实现三个抽象方法
+note over Developer
+  设置 name 属性用于标识
+  name 将在 ModerationFactory 中使用
+end note
+
+Developer -> Extension: 4. 通过扩展系统注册
+activate Extension
+note right of Extension
+  ExtensionModule.MODERATION
+  自动扫描 name 属性
+  建立策略名称到类的映射
+end note
+
+Developer -> Factory: 5. ModerationFactory 查找策略
+activate Factory
+note right of Factory
+  code_based_extension.extension_class(
+    ExtensionModule.MODERATION, 
+    "custom"
+  )
+  返回自定义策略类
+end note
+
+Developer -> Config: 6. 配置应用使用自定义策略
+activate Config
+note right of Config
+  app_config.sensitive_word_avoidance = {
+    "type": "custom",
+    "config": {...}
+  }
+end note
+
+Developer -> Developer: 7. 应用启动时验证配置
+
+note over Developer
+  ModerationFactory.validate_config(
+    "custom", 
+    tenant_id, 
+    config
+  )
+  
+  调用 CustomModeration.validate_config()
+  验证配置参数有效性
+end note
+
+Developer -->> Developer: 部署完成
+deactivate Developer
+
+...应用运行时...
+
+participant "应用运行器" as Runner
+
+Runner -> Factory: 8. 创建审核实例
+activate Runner
+note right of Runner
+  factory = ModerationFactory(
+    "custom",
+    app_id,
+    tenant_id,
+    config
+  )
+end note
+
+Factory -> Extension: 获取策略类
+activate Extension
+Extension -->> Factory: CustomModeration 类
+deactivate Extension
+
+Factory -> Factory: instance = CustomModeration(app_id, tenant_id, config)
+note right of Factory
+  调用 __init__ 初始化实例
+end note
+
+Runner -> Factory: 9. 执行审核
+note right of Runner
+  result = factory.moderation_for_inputs(inputs, query)
+  或
+  result = factory.moderation_for_outputs(text)
+end note
+
+Factory -> Factory: 调用策略的审核方法
+note right of Factory
+  self.__extension_instance.moderation_for_inputs()
+  或
+  self.__extension_instance.moderation_for_outputs()
+end note
+
+Factory -->> Runner: 返回审核结果
+deactivate Factory
+
+Runner -> Runner: 根据审核结果处理
+note right of Runner
+  if flagged:
+    if action == DIRECT_OUTPUT:
+      返回预设响应
+    elif action == OVERRIDDEN:
+      使用修改的内容
+end note
+
+deactivate Runner
+deactivate Extension
+deactivate Core
+deactivate Factory
+deactivate Config
+
+@enduml

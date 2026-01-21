@@ -1,0 +1,159 @@
+@startuml
+!define DIRECTION top to bottom
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowColor #1976D2
+skinparam sequenceActorBorderColor #426450ff
+skinparam sequenceParticipantBorderColor #6C757D
+skinparam SequenceParticipantBorderThickness 2
+skinparam sequenceLifeLineBorderColor #9bd0f5ff
+skinparam noteBackgroundColor #FFF3E0
+skinparam noteBorderColor #F57C00
+skinparam style strictuml
+skinparam Padding 6
+skinparam ParticipantPadding 30
+skinparam sequenceParticipant {
+    BackgroundColor #E1F5FE
+    BorderColor #01579B
+}
+
+participant "生成管道\n(TaskPipeline)" as Pipeline
+participant "输出审核\n(OutputModeration)" as OutMod
+participant "审核线程\n(WorkerThread)" as Worker
+participant "审核工厂\n(ModerationFactory)" as Factory
+participant "审核策略\n(Moderation)" as Strategy
+participant "队列管理\n(QueueManager)" as Queue
+participant "前端\n(Frontend)" as Frontend
+
+Pipeline -> OutMod: 初始化 OutputModeration 实例
+activate OutMod
+
+note over OutMod
+  tenant_id, app_id, rule, queue_manager
+end note
+
+loop 流式生成 token
+    Pipeline -> OutMod: append_new_token(token)
+    activate OutMod
+    
+    OutMod -> OutMod: buffer += token
+    
+    alt 首次调用
+        OutMod -> OutMod: start_thread()
+        note right of OutMod
+          创建 Thread 对象
+          target=self.worker
+          kwargs={flask_app, buffer_size}
+        end note
+        activate Worker
+        OutMod -> Worker: 启动线程 thread.start()
+        deactivate OutMod
+    else 非首次
+        OutMod -->> Pipeline: (无需等待)
+        deactivate OutMod
+    end
+    
+    Pipeline -> OutMod: 继续生成下一个 token
+end
+
+note over Worker
+  异步监控缓冲区
+  当累积内容达到 buffer_size 时执行审核
+end note
+
+activate Worker
+Worker -> Worker: 监控缓冲区
+note right of Worker
+  if chunk_length < buffer_size
+    sleep(1s)
+    continue
+end note
+
+Worker -> OutMod: moderation(tenant_id, app_id, moderation_buffer)
+activate OutMod
+
+OutMod -> Factory: ModerationFactory(type, app_id, tenant_id, config)
+activate Factory
+Factory -> Strategy: 创建审核策略实例
+activate Strategy
+deactivate Factory
+
+OutMod -> Strategy: moderation_for_outputs(moderation_buffer)
+
+Strategy -> Strategy: 执行审核逻辑
+note right of Strategy
+  Keywords: 关键词匹配
+  OpenAI: API 调用
+  API: 自定义端点
+end note
+
+Strategy -->> OutMod: ModerationOutputsResult
+deactivate Strategy
+
+OutMod -->> Worker: ModerationOutputsResult (or None)
+deactivate OutMod
+
+Worker -> Worker: 判断审核结果
+alt flagged = False
+    Worker -> Worker: 继续等待
+    note right of Worker
+      current_length = buffer_length
+      继续监控新内容
+    end note
+    
+else action = DIRECT_OUTPUT
+    Worker -> Worker: final_output = preset_response
+    Worker -> Queue: publish(QueueMessageReplaceEvent)
+    activate Queue
+    Queue -> Frontend: 实时推送替换事件
+    Frontend -> Frontend: 替换前端显示内容
+    deactivate Queue
+    
+    Worker -> Worker: thread_running = False
+    note right of Worker
+      停止审核线程
+    end note
+    
+else action = OVERRIDDEN
+    Worker -> Worker: 使用修改后的文本
+    note right of Worker
+      final_output = result.text + 
+                    remaining_buffer
+    end note
+end
+
+Pipeline -> OutMod: moderation_completion(completion)
+activate OutMod
+
+OutMod -> OutMod: is_final_chunk = True
+
+OutMod -> OutMod: moderation(tenant_id, app_id, completion)
+note right of OutMod
+  内部创建 ModerationFactory
+  调用 moderation_for_outputs()
+end note
+
+OutMod -> Strategy: moderation_for_outputs(completion)
+activate Strategy
+
+Strategy -->> OutMod: ModerationOutputsResult
+deactivate Strategy
+
+OutMod -> OutMod: 判断最终审核结果
+alt flagged = False
+    OutMod -->> Pipeline: (completion, False)
+else flagged = True
+    OutMod -> Queue: publish(QueueMessageReplaceEvent)
+    OutMod -->> Pipeline: (final_output, True)
+end
+
+deactivate OutMod
+
+OutMod -> OutMod: stop_thread()
+deactivate Worker
+deactivate OutMod
+
+Pipeline -->> Frontend: 返回最终输出
+Frontend -->> "用户\n(User)": 显示最终结果
+
+@enduml
